@@ -1,0 +1,296 @@
+use core::{iter, ptr};
+use std::borrow::Borrow;
+use std::mem::ManuallyDrop;
+
+use gfx_hal::{
+    adapter::Adapter,
+    Backend,
+    command::{ClearColor, ClearValue, CommandBuffer, CommandBufferFlags, SubpassContents},
+    device::Device,
+    image::Extent,
+    Instance,
+    pool::CommandPool,
+    pso::{Rect, Viewport},
+    queue::{CommandQueue, QueueGroup, Submission},
+    window::{Extent2D, PresentationSurface},
+};
+use winit::Window;
+
+use engine_const::{ENGINE_NAME, ENGINE_VERSION};
+use rendering::buffer::Buffer;
+use rendering::core_renderer_utilities::create_render_pass;
+use rendering::effect::Effect;
+use rendering::render_pass::RenderPass;
+
+use super::core_renderer_utilities::{create_command_buffer, create_command_pool, create_swapchain, extract_adapter, extract_device_and_queue_group};
+
+pub struct RenderState<'a, B: Backend> {
+    #[allow(unused)]
+    window: Window,
+    instance: Option<B::Instance>,
+    device: B::Device,
+    queue_group: QueueGroup<B>,
+    // desc_pool: ManuallyDrop<B::DescriptorPool>,
+    surface: ManuallyDrop<B::Surface>,
+    adapter: Adapter<B>,
+    // format: Format,
+    dimensions: Extent2D,
+    viewport: Viewport,
+    main_pass: ManuallyDrop<B::RenderPass>,
+    // pipeline: ManuallyDrop<B::GraphicsPipeline>,
+    // pipeline_layout: ManuallyDrop<B::PipelineLayout>,
+    // desc_set: B::DescriptorSet,
+    // set_layout: ManuallyDrop<B::DescriptorSetLayout>,
+    submission_complete_semaphores: Vec<B::Semaphore>,
+    submission_complete_fences: Vec<B::Fence>,
+    cmd_pools: Vec<B::CommandPool>,
+    cmd_buffers: Vec<B::CommandBuffer>,
+    // vertex_buffer: ManuallyDrop<B::Buffer>,
+    // image_upload_buffer: ManuallyDrop<B::Buffer>,
+    // image_logo: ManuallyDrop<B::Image>,
+    // image_srv: ManuallyDrop<B::ImageView>,
+    // buffer_memory: ManuallyDrop<B::Memory>,
+    // image_memory: ManuallyDrop<B::Memory>,
+    // image_upload_memory: ManuallyDrop<B::Memory>,
+    // sampler: ManuallyDrop<B::Sampler>,
+    frames_in_flight: usize,
+    frame_index: usize,
+    render_passes: Vec<RenderPass<'a, B>>,
+}
+
+impl<'a, B: Backend> RenderState<'a, B> {
+    pub fn new(window: Window) -> Result<RenderState<'a, B>, &'static str> {
+        log::info!("Initializing RenderState");
+
+        // Backend specific black box
+        let instance = B::Instance::create(ENGINE_NAME, ENGINE_VERSION).unwrap();
+
+        // link between the window and the instance (to draw on)
+        let mut surface: B::Surface = unsafe {
+            instance.create_surface(&window).unwrap()
+        };
+
+        // ... the adapter...
+        let adapter = extract_adapter::<B>(&instance, &surface);
+
+        // the logical device and the queue group for the command buffers
+        let (device, queue_group) = extract_device_and_queue_group::<B>(&adapter, &surface).unwrap();
+
+        // Physical size is the real-life size of the display, in physical pixels.
+        // Logical size is the scaled display, according to the OS. High-DPI
+        // displays will present a smaller logical size, which you can scale up by
+        // the DPI to determine the physical size.
+        let physical_window_size: (u32, u32) = window.get_inner_size().unwrap().to_physical(window.get_hidpi_factor()).into();
+        let dimensions = Extent2D { width: physical_window_size.0, height: physical_window_size.1 };
+        create_swapchain(dimensions, &adapter, &mut surface, &device);
+
+        let frames_in_flight: usize = 3;
+        let frame_index: usize = 0;
+
+        // The number of the rest of the resources is based on the frames in flight.
+        let mut submission_complete_semaphores = Vec::with_capacity(frames_in_flight);
+        let mut submission_complete_fences = Vec::with_capacity(frames_in_flight);
+        // Note: We don't really need a different command pool per frame in such a simple demo like this,
+        // but in a more 'real' application, it's generally seen as optimal to have one command pool per
+        // thread per frame. There is a flag that lets a command pool reset individual command buffers
+        // which are created from it, but by default the whole pool (and therefore all buffers in it)
+        // must be reset at once. Furthermore, it is often the case that resetting a whole pool is actually
+        // faster and more efficient for the hardware than resetting individual command buffers, so it's
+        // usually best to just make a command pool for each set of buffers which need to be reset at the
+        // same time (each frame). In our case, each pool will only have one command buffer created from it,
+        // though.
+        let mut cmd_pools: Vec<B::CommandPool> = Vec::with_capacity(frames_in_flight);
+        let mut cmd_buffers: Vec<B::CommandBuffer> = Vec::with_capacity(frames_in_flight);
+
+        for index in 0..frames_in_flight {
+            cmd_pools.push(create_command_pool::<B>(&device, queue_group.family));
+            cmd_buffers.push(create_command_buffer::<B>(cmd_pools.get_mut(index).unwrap()));
+
+            submission_complete_semaphores.push(
+                device
+                    .create_semaphore()
+                    .expect("Could not create semaphore"),
+            );
+            submission_complete_fences
+                .push(device.create_fence(true).expect("Could not create fence"));
+        }
+
+        let physical_window_size = &window.get_inner_size().unwrap().to_physical(window.get_hidpi_factor());
+
+        // Rendering setup
+        let viewport = Viewport {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: physical_window_size.width as _,
+                h: physical_window_size.height as _,
+            },
+            depth: 0.0..1.0,
+        };
+
+        let main_pass = create_render_pass::<B>(&device);
+
+        return Ok(RenderState {
+            window: window,
+            instance: Some(instance),
+            surface: ManuallyDrop::new(surface),
+            adapter,
+            frames_in_flight,
+            frame_index,
+            device,
+            queue_group,
+            cmd_pools,
+            cmd_buffers,
+            submission_complete_semaphores,
+            submission_complete_fences,
+            viewport,
+            dimensions,
+            main_pass,
+            render_passes: Vec::new(),
+        });
+    }
+
+    fn recreate_swapchain(&mut self) {
+        create_swapchain(self.dimensions, &self.adapter, &mut self.surface, &self.device);
+    }
+
+    pub fn render(&mut self, delta_time: f32) -> Result<(), &'static str> {
+        let surface_image = unsafe {
+            match self.surface.acquire_image(!0) {
+                Ok((image, _)) => image,
+                Err(_) => {
+                    self.recreate_swapchain();
+                    return Ok(());
+                }
+            }
+        };
+
+        let framebuffer = unsafe {
+            self.device
+                .create_framebuffer(
+                    &self.main_pass,
+                    iter::once(surface_image.borrow()),
+                    Extent {
+                        width: self.dimensions.width,
+                        height: self.dimensions.height,
+                        depth: 1,
+                    },
+                )
+                .unwrap()
+        };
+
+        // Compute index into our resource ring buffers based on the frame number
+        // and number of frames in flight. Pay close attention to where this index is needed
+        // versus when the swapchain image index we got from acquire_image is needed.
+        self.frame_index = self.frame_index % self.frames_in_flight;
+
+        // Wait for the fence of the previous submission of this frame and reset it; ensures we are
+        // submitting only up to maximum number of frames_in_flight if we are submitting faster than
+        // the gpu can keep up with. This would also guarantee that any resources which need to be
+        // updated with a CPU->GPU data copy are not in use by the GPU, so we can perform those updates.
+        // In this case there are none to be done, however.
+        unsafe {
+            let fence = &self.submission_complete_fences[self.frame_index];
+            self.device
+                .wait_for_fence(fence, !0)
+                .expect("Failed to wait for fence");
+            self.device
+                .reset_fence(fence)
+                .expect("Failed to reset fence");
+            self.cmd_pools[self.frame_index].reset(false);
+        }
+
+        let cmd_buffer = &mut self.cmd_buffers[self.frame_index];
+
+        unsafe {
+            cmd_buffer.begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
+
+            cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
+            cmd_buffer.set_scissors(0, &[self.viewport.rect]);
+
+            // here would pipelines go
+
+            cmd_buffer.begin_render_pass(
+                &self.main_pass,
+                &framebuffer,
+                self.viewport.rect,
+                &[ClearValue {
+                    color: ClearColor {
+                        float32: [delta_time, 0.0, 0.0, 1.0],
+                    },
+                }],
+                SubpassContents::Inline,
+            );
+            cmd_buffer.end_render_pass();
+
+            for render_pass in self.render_passes.iter_mut() {
+                render_pass.render(cmd_buffer, &framebuffer, self.viewport.rect);
+            }
+            cmd_buffer.finish();
+
+            let submission = Submission {
+                command_buffers: iter::once(&*cmd_buffer),
+                wait_semaphores: None,
+                signal_semaphores: iter::once(&self.submission_complete_semaphores[self.frame_index]),
+            };
+            self.queue_group.queues[0].submit(
+                submission,
+                Some(&self.submission_complete_fences[self.frame_index]),
+            );
+
+            // present frame
+            let result = self.queue_group.queues[0].present(
+                &mut self.surface,
+                surface_image,
+                Some(&self.submission_complete_semaphores[self.frame_index]),
+            );
+
+            self.device.destroy_framebuffer(framebuffer);
+
+            if result.is_err() {
+                self.recreate_swapchain();
+            }
+        }
+
+        self.frame_index += 1;
+
+        return Ok(());
+    }
+    //
+    // pub fn remove_render_set(&mut self, buffer: Buffer<B>, effect: Effect<B>) {
+    //     // do nothing .. for now
+    // }
+
+    fn add_render_pass(&mut self, buffer: &'a mut Buffer<'a, B>, effect: &'a mut Effect<B>) {
+        self.render_passes.push(RenderPass::<B>::new(&self.device, effect, buffer));
+    }
+//
+// pub fn remove_render_set(&mut self, buffer: Buffer<B>, effect: Effect<B>) {
+//     // do nothing .. for now
+// }
+}
+
+impl<'a, B: Backend> Drop for RenderState<'a, B> {
+    fn drop(&mut self) {
+        self.device.wait_idle().unwrap();
+        unsafe {
+            for p in self.cmd_pools.drain(..) {
+                self.device.destroy_command_pool(p);
+            }
+            for s in self.submission_complete_semaphores.drain(..) {
+                self.device.destroy_semaphore(s);
+            }
+            for f in self.submission_complete_fences.drain(..) {
+                self.device.destroy_fence(f);
+            }
+            self.device
+                .destroy_render_pass(ManuallyDrop::into_inner(ptr::read(&self.main_pass)));
+            self.surface.unconfigure_swapchain(&self.device);
+            if let Some(instance) = &self.instance {
+                let surface = ManuallyDrop::into_inner(ptr::read(&self.surface));
+                instance.destroy_surface(surface);
+            }
+        }
+        println!("DROPPED!");
+    }
+}
