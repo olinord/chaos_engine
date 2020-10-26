@@ -16,8 +16,10 @@ extern crate gfx_hal;
 extern crate log;
 extern crate winit;
 
+pub use back::Backend as ChaosBackend;
+
 
 pub mod engine;
 pub mod ecs;
 pub mod rendering;
-mod engine_const;
+pub mod engine_const;

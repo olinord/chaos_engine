@@ -1,5 +1,4 @@
-use std::{fs, mem};
-use std::any::Any;
+use std::mem;
 use std::mem::ManuallyDrop;
 
 use gfx_hal::Backend;
@@ -7,10 +6,16 @@ use gfx_hal::command::CommandBuffer;
 use gfx_hal::device::Device;
 use gfx_hal::format::Format;
 use gfx_hal::pass::Subpass;
-use gfx_hal::pso::{AttributeDesc, BlendState, ColorBlendDesc, ColorMask, Element, EntryPoint, GraphicsPipelineDesc, InputAssemblerDesc, Location, Primitive, PrimitiveAssemblerDesc, Rasterizer, Specialization, VertexBufferDesc, VertexInputRate};
+use gfx_hal::pso::{AttributeDesc, BlendState, ColorBlendDesc, ColorMask, Element, EntryPoint, GraphicsPipelineDesc, InputAssemblerDesc, Location, Primitive, PrimitiveAssemblerDesc, Rasterizer, Specialization, VertexBufferDesc, VertexInputRate, DescriptorSetLayoutBinding, ShaderStageFlags, Face};
 
 use super::spirv_reflect::*;
 use super::spirv_reflect::types::{ReflectFormat, ReflectInterfaceVariable};
+use std::path::PathBuf;
+use std::io::Read;
+
+pub trait BufferData {
+    fn layout() -> Vec<u32>;
+}
 
 pub struct Effect<B: Backend> {
     pipeline: ManuallyDrop<B::GraphicsPipeline>,
@@ -23,7 +28,7 @@ struct ShaderInfo {
     path: String,
     entry_point_name: String,
     code: Vec<u32>,
-    attributes: Vec<ReflectInterfaceVariable>,
+    attributes: Vec<AttributeDesc>
     // need the push constants?
 }
 
@@ -33,16 +38,28 @@ impl<B: Backend> Effect<B>
     /*
     Creates a new Vertex Pixel shader effect
     */
-    pub fn vertex_pixel<T: Any>(device: &B::Device, vs_path: String, ps_path: String, pass: &Subpass<B>) -> Result<Effect<B>, &'static str> {
+    pub fn vertex_pixel<T: BufferData>(device: &B::Device, vs_path: String, ps_path: String, pass: &Subpass<B>) -> Result<Effect<B>, &'static str> {
+        let bindings = Vec::<DescriptorSetLayoutBinding>::new();
+        let immutable_samplers = Vec::<B::Sampler>::new();
+        let descriptor_set_layouts: Vec<B::DescriptorSetLayout> = vec![unsafe {
+            device
+                .create_descriptor_set_layout(bindings, immutable_samplers)
+                .map_err(|_| "Couldn't make a DescriptorSetLayout")?
+        }];
+        let push_constants = Vec::<(ShaderStageFlags, core::ops::Range<u32>)>::new();
         let pipeline_layout = ManuallyDrop::new(
-            // here would the push constants be set,
-            // see https://docs.rs/gfx-hal/0.6.0/gfx_hal/device/trait.Device.html#tymethod.create_pipeline_layout
-            unsafe { device.create_pipeline_layout(&[], &[]) }
-                .expect("Can't create pipeline layout"),
+            unsafe {
+                device
+                    .create_pipeline_layout(&descriptor_set_layouts, push_constants)
+            }.expect("Can't create pipeline layout")
         );
 
-        let vertex_shader = ShaderInfo::new(vs_path)?;
-        let pixel_shader = ShaderInfo::new(ps_path)?;
+        let path_to_exec = std::env::current_exe().unwrap();
+        let path_to_exec_folder = path_to_exec.parent().unwrap();
+        let path_to_vs: PathBuf = path_to_exec_folder.join("res/shaders").join(format!("{}.spv", vs_path));
+        let path_to_ps: PathBuf = path_to_exec_folder.join("res/shaders").join(format!("{}.spv", ps_path));
+        let vertex_shader = ShaderInfo::new(path_to_vs.display().to_string(), &T::layout())?;
+        let pixel_shader = ShaderInfo::new(path_to_ps.display().to_string(), &T::layout())?;
 
         let vertex_shader_module = unsafe {
             device.create_shader_module(vertex_shader.code.as_slice())
@@ -71,11 +88,11 @@ impl<B: Backend> Effect<B>
                 specialization: Specialization::default(),
             };
 
-            let attributes = vertex_shader.get_attribute_vec();
             let mut pipeline_desc = GraphicsPipelineDesc::new(
+
                 PrimitiveAssemblerDesc::Vertex {
                     buffers: &vertex_buffers,
-                    attributes: &attributes,
+                    attributes: &vertex_shader.attributes,
                     input_assembler: InputAssemblerDesc {
                         primitive: Primitive::TriangleList,
                         with_adjacency: false,
@@ -85,7 +102,10 @@ impl<B: Backend> Effect<B>
                     geometry: None,
                     tessellation: None,
                 },
-                Rasterizer::FILL,
+                Rasterizer {
+                    cull_face: Face::BACK,
+                    ..Rasterizer::FILL
+                },
                 Some(pixel_shader_entry_point),
                 &*pipeline_layout,
                 *pass,
@@ -101,8 +121,6 @@ impl<B: Backend> Effect<B>
         // kill the now obsolete things
         unsafe {
             device.destroy_shader_module(vertex_shader_module);
-        }
-        unsafe {
             device.destroy_shader_module(pixel_shader_module);
         }
 
@@ -117,20 +135,25 @@ impl<B: Backend> Effect<B>
     pub fn bind_to_cmd_buffer(&self, cmd_buffer: &mut B::CommandBuffer) {
         unsafe {
             cmd_buffer.bind_graphics_pipeline(&self.pipeline);
-            cmd_buffer.bind_graphics_descriptor_sets(&self.pipeline_layout,
-                                                     0,
-                                                     &[], // here should image descriptor sets
-                                                     &[], );
+            // cmd_buffer.bind_graphics_descriptor_sets(&self.pipeline_layout,
+            //                                          0,
+            //                                          &[], // here should image descriptor sets
+            //                                          &[], );
         }
     }
 }
 
 
 impl ShaderInfo {
-    fn new(effect_path: String) -> Result<ShaderInfo, &'static str> {
-        let shader_data = fs::read_to_string(&effect_path).or_else(|e| Err(format!("{}", e))).unwrap();
+    fn new(effect_path: String, layout: &Vec<u32>) -> Result<ShaderInfo, &'static str> {
+        println!("Reading {}", effect_path);
 
-        let module = ShaderModule::load_u8_data(shader_data.as_bytes()).or_else(|e| Err(format!("{}", e))).unwrap();
+        let mut shader_file = std::fs::File::open(&effect_path).unwrap();
+        let mut shader_data = Vec::new();
+
+        shader_file.read_to_end(&mut shader_data).or_else(|_| Err("Failed to read"))?;
+
+        let module = ShaderModule::load_u8_data(shader_data.as_slice()).or_else(|e| Err(format!("{}", e))).unwrap();
         let _entry_point_name = module.get_entry_point_name();
         let _generator = module.get_generator();
         let _shader_stage = module.get_shader_stage();
@@ -152,17 +175,20 @@ impl ShaderInfo {
         }
 
         return Ok(ShaderInfo {
-            path: effect_path,
+            path: effect_path.clone(),
             entry_point_name: _entry_point_name,
             code: module.get_code(),
-            attributes: input_vars,
+            attributes: ShaderInfo::get_attribute_vec(&input_vars, &layout, &effect_path),
         });
     }
 
 
-    fn get_attribute_vec(&self) -> Vec<AttributeDesc> {
+
+
+    fn get_attribute_vec(input_vars: &Vec<ReflectInterfaceVariable>, layout: &Vec<u32>, path: &String) -> Vec<AttributeDesc> {
         let mut attributes: Vec<AttributeDesc> = Vec::new();
-        for attr in self.attributes.as_slice() {
+        let mut index = 0;
+        for attr in input_vars.as_slice() {
             attributes.push(AttributeDesc {
                 location: Location::from(attr.location),
                 binding: 0, // Is this for multiple buffers?
@@ -181,13 +207,14 @@ impl ShaderInfo {
                         ReflectFormat::R32G32B32A32_SINT => Format::Rgba32Sint,
                         ReflectFormat::R32G32B32A32_SFLOAT => Format::Rgba32Sfloat,
                         _ => {
-                            log::warn!("Unknown format for shader input {} in shader {}", attr.name, self.path.as_str());
+                            log::warn!("Unknown format for shader input {} in shader {}", attr.name, path.as_str());
                             Format::R32Uint
                         }
                     },
-                    offset: attr.word_offset,
+                    offset: layout[index], // have both layout and calculate, so we can assert that they are eual
                 },
-            })
+            });
+            index += 1;
         }
         attributes
     }

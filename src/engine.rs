@@ -6,16 +6,17 @@ use ecs::{
 };
 use rendering::render_state::RenderState;
 
-pub struct ChaosEngine<'a> {
-    render_state: RenderState<'a, back::Backend>,
+
+pub struct ChaosEngine {
+    render_state: RenderState<back::Backend>,
     events_loop: EventsLoop,
     chaos_manager: ChaosComponentManager,
-    render_services: Vec<Box<dyn ChaosRenderService<'a>>>,
+    render_services: Vec<Box<dyn ChaosRenderService>>,
     services: Vec<Box<dyn ChaosService>>,
 }
 
-impl<'a> ChaosEngine<'a> {
-    pub fn new(name: String, width: u32, height: u32) -> Result<ChaosEngine<'a>, &'static str> {
+impl ChaosEngine {
+    pub fn new(name: String, width: u32, height: u32) -> Result<ChaosEngine, &'static str> {
         let events_loop = EventsLoop::new();
 
         let wb = winit::WindowBuilder::new()
@@ -30,7 +31,7 @@ impl<'a> ChaosEngine<'a> {
 
         let render_state = RenderState::<back::Backend>::new(window).unwrap();
 
-        return Ok(ChaosEngine {
+        return Ok(ChaosEngine{
             events_loop,
             render_state,
             chaos_manager: ChaosComponentManager::new(100, 10),
@@ -66,18 +67,16 @@ impl<'a> ChaosEngine<'a> {
     }
 
     /// Adds a service to the manager and initializes it
-    pub fn add_service<CS: ChaosService>(&mut self, service: CS) {
+    pub fn add_service<CS: ChaosService>(&mut self, service: CS) -> &Box<dyn ChaosService>{
         self.services.push(Box::new(service));
         self.services.last_mut().unwrap().initialize();
+        self.services.last().unwrap()
     }
 
-    pub fn add_render_service<CRS: ChaosRenderService<'a>>(&mut self, render_service: CRS) {
+    pub fn add_render_service<CRS: ChaosRenderService>(&mut self, render_service: CRS) ->  &Box<dyn ChaosRenderService>{
         self.render_services.push(Box::new(render_service));
         self.render_services.last_mut().unwrap().initialize(&mut self.render_state);
-    }
-
-    pub fn get_render_state(&mut self) -> &mut RenderState<'a, back::Backend> {
-        return &mut self.render_state;
+        self.render_services.last().unwrap()
     }
 }
 

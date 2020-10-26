@@ -19,12 +19,13 @@ use winit::Window;
 use engine_const::{ENGINE_NAME, ENGINE_VERSION};
 use rendering::buffer::Buffer;
 use rendering::core_renderer_utilities::create_render_pass;
-use rendering::effect::Effect;
+use rendering::effect::{Effect, BufferData};
 use rendering::render_pass::RenderPass;
 
 use super::core_renderer_utilities::{create_command_buffer, create_command_pool, create_swapchain, extract_adapter, extract_device_and_queue_group};
+use gfx_hal::pass::Subpass;
 
-pub struct RenderState<'a, B: Backend> {
+pub struct RenderState<B: Backend> {
     #[allow(unused)]
     window: Window,
     instance: Option<B::Instance>,
@@ -55,11 +56,11 @@ pub struct RenderState<'a, B: Backend> {
     // sampler: ManuallyDrop<B::Sampler>,
     frames_in_flight: usize,
     frame_index: usize,
-    render_passes: Vec<RenderPass<'a, B>>,
+    render_passes: Vec<RenderPass<B>>
 }
 
-impl<'a, B: Backend> RenderState<'a, B> {
-    pub fn new(window: Window) -> Result<RenderState<'a, B>, &'static str> {
+impl<B: Backend> RenderState<B> {
+    pub fn new(window: Window) -> Result<RenderState<B>, &'static str> {
         log::info!("Initializing RenderState");
 
         // Backend specific black box
@@ -146,7 +147,7 @@ impl<'a, B: Backend> RenderState<'a, B> {
             viewport,
             dimensions,
             main_pass,
-            render_passes: Vec::new(),
+            render_passes: Vec::new()
         });
     }
 
@@ -209,23 +210,26 @@ impl<'a, B: Backend> RenderState<'a, B> {
             cmd_buffer.set_scissors(0, &[self.viewport.rect]);
 
             // here would pipelines go
-
+            for render_pass in self.render_passes.iter_mut() {
+                render_pass.bind_buffer(cmd_buffer);
+            }
             cmd_buffer.begin_render_pass(
                 &self.main_pass,
                 &framebuffer,
                 self.viewport.rect,
                 &[ClearValue {
                     color: ClearColor {
-                        float32: [delta_time, 0.0, 0.0, 1.0],
+                        float32: [0.05, 0.05, 0.05, 1.0],
                     },
                 }],
                 SubpassContents::Inline,
             );
-            cmd_buffer.end_render_pass();
 
             for render_pass in self.render_passes.iter_mut() {
-                render_pass.render(cmd_buffer, &framebuffer, self.viewport.rect);
+                render_pass.render(cmd_buffer);
             }
+
+            cmd_buffer.end_render_pass();
             cmd_buffer.finish();
 
             let submission = Submission {
@@ -233,6 +237,7 @@ impl<'a, B: Backend> RenderState<'a, B> {
                 wait_semaphores: None,
                 signal_semaphores: iter::once(&self.submission_complete_semaphores[self.frame_index]),
             };
+
             self.queue_group.queues[0].submit(
                 submission,
                 Some(&self.submission_complete_fences[self.frame_index]),
@@ -256,21 +261,23 @@ impl<'a, B: Backend> RenderState<'a, B> {
 
         return Ok(());
     }
-    //
-    // pub fn remove_render_set(&mut self, buffer: Buffer<B>, effect: Effect<B>) {
-    //     // do nothing .. for now
-    // }
 
-    fn add_render_pass(&mut self, buffer: &'a mut Buffer<'a, B>, effect: &'a mut Effect<B>) {
-        self.render_passes.push(RenderPass::<B>::new(&self.device, effect, buffer));
+    pub fn add_render_pass<T: BufferData>(&mut self, data_list: &[T], vs_path: String, ps_path: String) -> Result<&mut RenderPass<B>, &'static str> {
+        let subpass = Subpass {
+            index: 0,//self.render_passes.len() as u8,
+            main_pass: &*self.main_pass,
+        };
+        let effect = Effect::vertex_pixel::<T>( &self.device, vs_path, ps_path, &subpass).or(Err("Render Pass Creation Failed"))?;
+        let buffer = Buffer::vertex_buffer(data_list, &self.device, &self.adapter.physical_device);
+        let render_pass = RenderPass::<B>::new(&self.device, effect, buffer);
+        self.render_passes.push(render_pass);
+        let length = self.render_passes.len();
+        Ok(self.render_passes.get_mut(length - 1).unwrap())
     }
-//
-// pub fn remove_render_set(&mut self, buffer: Buffer<B>, effect: Effect<B>) {
-//     // do nothing .. for now
-// }
+
 }
 
-impl<'a, B: Backend> Drop for RenderState<'a, B> {
+impl<B: Backend> Drop for RenderState<B> {
     fn drop(&mut self) {
         self.device.wait_idle().unwrap();
         unsafe {

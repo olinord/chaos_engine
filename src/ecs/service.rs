@@ -9,7 +9,7 @@ pub trait ChaosService: Any {
 }
 
 
-pub trait ChaosRenderService<'a>: Any {
-    fn initialize(&mut self, render_state: &mut RenderState<'a, back::Backend>);
-    fn update(&mut self, delta_time: f32, component_manager: &mut ChaosComponentManager, render_state: &mut RenderState<'a, back::Backend>);
+pub trait ChaosRenderService: Any {
+    fn initialize(&mut self, render_state: &mut RenderState<back::Backend>);
+    fn update(&mut self, delta_time: f32, component_manager: &mut ChaosComponentManager, render_state: &mut RenderState<back::Backend>);
 }
