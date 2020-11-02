@@ -17,13 +17,13 @@ use gfx_hal::{
 use winit::Window;
 
 use engine_const::{ENGINE_NAME, ENGINE_VERSION};
-use rendering::buffer::Buffer;
+use rendering::buffer::{Buffer, BufferData};
 use rendering::core_renderer_utilities::create_render_pass;
-use rendering::effect::{Effect, BufferData};
-use rendering::render_pass::RenderPass;
+use rendering::effect::Effect;
 
 use super::core_renderer_utilities::{create_command_buffer, create_command_pool, create_swapchain, extract_adapter, extract_device_and_queue_group};
 use gfx_hal::pass::Subpass;
+use rendering::render_pass::RenderPass;
 
 pub struct RenderState<B: Backend> {
     #[allow(unused)]
@@ -31,29 +31,15 @@ pub struct RenderState<B: Backend> {
     instance: Option<B::Instance>,
     device: B::Device,
     queue_group: QueueGroup<B>,
-    // desc_pool: ManuallyDrop<B::DescriptorPool>,
     surface: ManuallyDrop<B::Surface>,
     adapter: Adapter<B>,
-    // format: Format,
     dimensions: Extent2D,
     viewport: Viewport,
     main_pass: ManuallyDrop<B::RenderPass>,
-    // pipeline: ManuallyDrop<B::GraphicsPipeline>,
-    // pipeline_layout: ManuallyDrop<B::PipelineLayout>,
-    // desc_set: B::DescriptorSet,
-    // set_layout: ManuallyDrop<B::DescriptorSetLayout>,
     submission_complete_semaphores: Vec<B::Semaphore>,
     submission_complete_fences: Vec<B::Fence>,
     cmd_pools: Vec<B::CommandPool>,
     cmd_buffers: Vec<B::CommandBuffer>,
-    // vertex_buffer: ManuallyDrop<B::Buffer>,
-    // image_upload_buffer: ManuallyDrop<B::Buffer>,
-    // image_logo: ManuallyDrop<B::Image>,
-    // image_srv: ManuallyDrop<B::ImageView>,
-    // buffer_memory: ManuallyDrop<B::Memory>,
-    // image_memory: ManuallyDrop<B::Memory>,
-    // image_upload_memory: ManuallyDrop<B::Memory>,
-    // sampler: ManuallyDrop<B::Sampler>,
     frames_in_flight: usize,
     frame_index: usize,
     render_passes: Vec<RenderPass<B>>
@@ -132,7 +118,7 @@ impl<B: Backend> RenderState<B> {
         let main_pass = create_render_pass::<B>(&device);
 
         return Ok(RenderState {
-            window: window,
+            window,
             instance: Some(instance),
             surface: ManuallyDrop::new(surface),
             adapter,
@@ -209,10 +195,6 @@ impl<B: Backend> RenderState<B> {
             cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
             cmd_buffer.set_scissors(0, &[self.viewport.rect]);
 
-            // here would pipelines go
-            for render_pass in self.render_passes.iter_mut() {
-                render_pass.bind_buffer(cmd_buffer);
-            }
             cmd_buffer.begin_render_pass(
                 &self.main_pass,
                 &framebuffer,
@@ -225,7 +207,12 @@ impl<B: Backend> RenderState<B> {
                 SubpassContents::Inline,
             );
 
+            // here would pipelines go
+            // for render_pass in self.render_passes.iter_mut() {
+            //     render_pass.bind_buffer(cmd_buffer);
+            // }
             for render_pass in self.render_passes.iter_mut() {
+                render_pass.bind_buffer(cmd_buffer);
                 render_pass.render(cmd_buffer);
             }
 
@@ -264,17 +251,18 @@ impl<B: Backend> RenderState<B> {
 
     pub fn add_render_pass<T: BufferData>(&mut self, data_list: &[T], vs_path: String, ps_path: String) -> Result<&mut RenderPass<B>, &'static str> {
         let subpass = Subpass {
-            index: 0,//self.render_passes.len() as u8,
+            index: 0,
             main_pass: &*self.main_pass,
         };
-        let effect = Effect::vertex_pixel::<T>( &self.device, vs_path, ps_path, &subpass).or(Err("Render Pass Creation Failed"))?;
+
+        let effect = Effect::vertex_pixel::<T>(&self.device, vs_path, ps_path, &subpass)?;
+
         let buffer = Buffer::vertex_buffer(data_list, &self.device, &self.adapter.physical_device);
-        let render_pass = RenderPass::<B>::new(&self.device, effect, buffer);
+        let render_pass = RenderPass::<B>::new(effect, buffer);
         self.render_passes.push(render_pass);
         let length = self.render_passes.len();
         Ok(self.render_passes.get_mut(length - 1).unwrap())
     }
-
 }
 
 impl<B: Backend> Drop for RenderState<B> {

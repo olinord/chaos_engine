@@ -9,13 +9,11 @@ use gfx_hal::pass::Subpass;
 use gfx_hal::pso::{AttributeDesc, BlendState, ColorBlendDesc, ColorMask, Element, EntryPoint, GraphicsPipelineDesc, InputAssemblerDesc, Location, Primitive, PrimitiveAssemblerDesc, Rasterizer, Specialization, VertexBufferDesc, VertexInputRate, DescriptorSetLayoutBinding, ShaderStageFlags, Face};
 
 use super::spirv_reflect::*;
-use super::spirv_reflect::types::{ReflectFormat, ReflectInterfaceVariable};
+use super::spirv_reflect::types::{ReflectFormat, ReflectInterfaceVariable, ReflectBlockVariable};
 use std::path::PathBuf;
 use std::io::Read;
-
-pub trait BufferData {
-    fn layout() -> Vec<u32>;
-}
+use rendering::buffer::BufferData;
+use std::collections::HashMap;
 
 pub struct Effect<B: Backend> {
     pipeline: ManuallyDrop<B::GraphicsPipeline>,
@@ -29,6 +27,7 @@ struct ShaderInfo {
     entry_point_name: String,
     code: Vec<u32>,
     attributes: Vec<AttributeDesc>
+
     // need the push constants?
 }
 
@@ -39,6 +38,15 @@ impl<B: Backend> Effect<B>
     Creates a new Vertex Pixel shader effect
     */
     pub fn vertex_pixel<T: BufferData>(device: &B::Device, vs_path: String, ps_path: String, pass: &Subpass<B>) -> Result<Effect<B>, &'static str> {
+        let path_to_exec = std::env::current_exe().unwrap();
+        let path_to_exec_folder = path_to_exec.parent().unwrap();
+        let path_to_vs: PathBuf = path_to_exec_folder.join("res/shaders").join(format!("{}.spv", vs_path));
+        let path_to_ps: PathBuf = path_to_exec_folder.join("res/shaders").join(format!("{}.spv", ps_path));
+        let vertex_shader = ShaderInfo::new(path_to_vs.display().to_string(), &T::layout(), pass.index as u32)?;
+        let pixel_shader = ShaderInfo::new(path_to_ps.display().to_string(), &T::layout(), pass.index as u32)?;
+
+
+
         let bindings = Vec::<DescriptorSetLayoutBinding>::new();
         let immutable_samplers = Vec::<B::Sampler>::new();
         let descriptor_set_layouts: Vec<B::DescriptorSetLayout> = vec![unsafe {
@@ -47,6 +55,10 @@ impl<B: Backend> Effect<B>
                 .map_err(|_| "Couldn't make a DescriptorSetLayout")?
         }];
         let push_constants = Vec::<(ShaderStageFlags, core::ops::Range<u32>)>::new();
+
+        // push FRAGMENT 0..3
+        // push VERTEX 0..4 or something
+
         let pipeline_layout = ManuallyDrop::new(
             unsafe {
                 device
@@ -54,12 +66,6 @@ impl<B: Backend> Effect<B>
             }.expect("Can't create pipeline layout")
         );
 
-        let path_to_exec = std::env::current_exe().unwrap();
-        let path_to_exec_folder = path_to_exec.parent().unwrap();
-        let path_to_vs: PathBuf = path_to_exec_folder.join("res/shaders").join(format!("{}.spv", vs_path));
-        let path_to_ps: PathBuf = path_to_exec_folder.join("res/shaders").join(format!("{}.spv", ps_path));
-        let vertex_shader = ShaderInfo::new(path_to_vs.display().to_string(), &T::layout())?;
-        let pixel_shader = ShaderInfo::new(path_to_ps.display().to_string(), &T::layout())?;
 
         let vertex_shader_module = unsafe {
             device.create_shader_module(vertex_shader.code.as_slice())
@@ -70,7 +76,7 @@ impl<B: Backend> Effect<B>
         }.unwrap();
 
         let vertex_buffers = vec![VertexBufferDesc {
-            binding: 0,
+            binding: pass.index as u32,
             stride: mem::size_of::<T>() as u32,
             rate: VertexInputRate::Vertex, // this could also use instance, would need some different logic for that
         }];
@@ -135,17 +141,20 @@ impl<B: Backend> Effect<B>
     pub fn bind_to_cmd_buffer(&self, cmd_buffer: &mut B::CommandBuffer) {
         unsafe {
             cmd_buffer.bind_graphics_pipeline(&self.pipeline);
-            // cmd_buffer.bind_graphics_descriptor_sets(&self.pipeline_layout,
-            //                                          0,
-            //                                          &[], // here should image descriptor sets
-            //                                          &[], );
+
+            // set push constants here
+
+            cmd_buffer.bind_graphics_descriptor_sets(&self.pipeline_layout,
+                                                     0,
+                                                     &[], // here should image descriptor sets
+                                                     &[], );
         }
     }
 }
 
 
 impl ShaderInfo {
-    fn new(effect_path: String, layout: &Vec<u32>) -> Result<ShaderInfo, &'static str> {
+    fn new(effect_path: String, layout: &Vec<u32>, binding: u32) -> Result<ShaderInfo, &'static str> {
         println!("Reading {}", effect_path);
 
         let mut shader_file = std::fs::File::open(&effect_path).unwrap();
@@ -165,6 +174,7 @@ impl ShaderInfo {
         let _output_vars = module.enumerate_output_variables(None).unwrap();
         let _bindings = module.enumerate_descriptor_bindings(None).unwrap();
         let _sets = module.enumerate_descriptor_sets(None).unwrap();
+        let _constants = module.enumerate_push_constant_blocks(None).unwrap();
 
         let input_vars = module.enumerate_input_variables(None).unwrap();
         for var in &input_vars {
@@ -173,25 +183,28 @@ impl ShaderInfo {
                 var.name, var.location
             );
         }
+        for constant in &_constants {
+            println!("    Constant - name {} offset {} size {}", constant.name, constant.offset, constant.size);
+            for member in &constant.members {
+                println!("    Member - name {} offset {} size {}", member.name, member.offset, member.size);
+            }
+        }
 
         return Ok(ShaderInfo {
             path: effect_path.clone(),
             entry_point_name: _entry_point_name,
             code: module.get_code(),
-            attributes: ShaderInfo::get_attribute_vec(&input_vars, &layout, &effect_path),
+            attributes: ShaderInfo::get_attribute_vec(&input_vars, &layout, &effect_path, binding),
         });
     }
 
-
-
-
-    fn get_attribute_vec(input_vars: &Vec<ReflectInterfaceVariable>, layout: &Vec<u32>, path: &String) -> Vec<AttributeDesc> {
+    fn get_attribute_vec(input_vars: &Vec<ReflectInterfaceVariable>, layout: &Vec<u32>, path: &String, binding: u32) -> Vec<AttributeDesc> {
         let mut attributes: Vec<AttributeDesc> = Vec::new();
-        let mut index = 0;
+
         for attr in input_vars.as_slice() {
             attributes.push(AttributeDesc {
                 location: Location::from(attr.location),
-                binding: 0, // Is this for multiple buffers?
+                binding: binding, // Is this for multiple buffers?
                 element: Element {
                     format: match attr.format {
                         ReflectFormat::R32_UINT => Format::R32Uint,
@@ -211,11 +224,18 @@ impl ShaderInfo {
                             Format::R32Uint
                         }
                     },
-                    offset: layout[index], // have both layout and calculate, so we can assert that they are eual
+                    offset: layout[attr.location as usize], // have both layout and calculate, so we can assert that they are eual
                 },
             });
-            index += 1;
         }
         attributes
+    }
+
+    fn get_push_constants(constants: &Vec<ReflectBlockVariable>) -> HashMap<String, u32> {
+        let mut constant_map = HashMap::new();
+        for constant in constants.as_slice() {
+            constant_map.insert(String::from(&constant.name), constant.offset);
+        }
+        constant_map
     }
 }

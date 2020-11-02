@@ -9,8 +9,10 @@ use gfx_hal::{
     memory::{Properties, Segment},
 };
 use gfx_hal::command::CommandBuffer;
-use rendering::effect::BufferData;
 
+pub trait BufferData {
+    fn layout() -> Vec<u32>;
+}
 
 pub struct Buffer<B: Backend> {
     buffer: ManuallyDrop<B::Buffer>,
