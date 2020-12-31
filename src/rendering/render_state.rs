@@ -5,7 +5,6 @@ use std::mem::ManuallyDrop;
 use gfx_hal::{
     adapter::Adapter,
     Backend,
-    command::{ClearColor, ClearValue, CommandBuffer, CommandBufferFlags, SubpassContents},
     device::Device,
     image::Extent,
     Instance,
@@ -17,13 +16,12 @@ use gfx_hal::{
 use winit::Window;
 
 use engine_const::{ENGINE_NAME, ENGINE_VERSION};
-use rendering::buffer::{Buffer, BufferData};
 use rendering::core_renderer_utilities::create_render_pass;
-use rendering::effect::Effect;
 
 use super::core_renderer_utilities::{create_command_buffer, create_command_pool, create_swapchain, extract_adapter, extract_device_and_queue_group};
-use gfx_hal::pass::Subpass;
-use rendering::render_pass::RenderPass;
+use commands::cmd::RenderCmd;
+use rendering::render_context::RenderContext;
+use std::slice::IterMut;
 
 pub struct RenderState<B: Backend> {
     #[allow(unused)]
@@ -42,7 +40,6 @@ pub struct RenderState<B: Backend> {
     cmd_buffers: Vec<B::CommandBuffer>,
     frames_in_flight: usize,
     frame_index: usize,
-    render_passes: Vec<RenderPass<B>>
 }
 
 impl<B: Backend> RenderState<B> {
@@ -133,7 +130,6 @@ impl<B: Backend> RenderState<B> {
             viewport,
             dimensions,
             main_pass,
-            render_passes: Vec::new()
         });
     }
 
@@ -141,7 +137,7 @@ impl<B: Backend> RenderState<B> {
         create_swapchain(self.dimensions, &self.adapter, &mut self.surface, &self.device);
     }
 
-    pub fn render(&mut self, delta_time: f32) -> Result<(), &'static str> {
+    pub fn render(&mut self, render_commands: IterMut<'_, Box<dyn RenderCmd<B>>>) -> Result<(), &'static str> {
         let surface_image = unsafe {
             match self.surface.acquire_image(!0) {
                 Ok((image, _)) => image,
@@ -152,7 +148,7 @@ impl<B: Backend> RenderState<B> {
             }
         };
 
-        let framebuffer = unsafe {
+        let mut framebuffer = unsafe {
             self.device
                 .create_framebuffer(
                     &self.main_pass,
@@ -188,37 +184,18 @@ impl<B: Backend> RenderState<B> {
         }
 
         let cmd_buffer = &mut self.cmd_buffers[self.frame_index];
+        let mut render_context = RenderContext::new(&mut self.device, &mut *self.main_pass, &mut self.adapter.physical_device, cmd_buffer, &mut framebuffer);
+
+        let clear_color = [0.05, 0.05, 0.05, 1.0];
+        render_context.begin(clear_color, &self.viewport, None, None);
+
+        for command in render_commands {
+            command.render(&mut render_context);
+        }
+
+        render_context.end();
 
         unsafe {
-            cmd_buffer.begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
-
-            cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
-            cmd_buffer.set_scissors(0, &[self.viewport.rect]);
-
-            cmd_buffer.begin_render_pass(
-                &self.main_pass,
-                &framebuffer,
-                self.viewport.rect,
-                &[ClearValue {
-                    color: ClearColor {
-                        float32: [0.05, 0.05, 0.05, 1.0],
-                    },
-                }],
-                SubpassContents::Inline,
-            );
-
-            // here would pipelines go
-            // for render_pass in self.render_passes.iter_mut() {
-            //     render_pass.bind_buffer(cmd_buffer);
-            // }
-            for render_pass in self.render_passes.iter_mut() {
-                render_pass.bind_buffer(cmd_buffer);
-                render_pass.render(cmd_buffer);
-            }
-
-            cmd_buffer.end_render_pass();
-            cmd_buffer.finish();
-
             let submission = Submission {
                 command_buffers: iter::once(&*cmd_buffer),
                 wait_semaphores: None,
@@ -249,20 +226,31 @@ impl<B: Backend> RenderState<B> {
         return Ok(());
     }
 
-    pub fn add_render_pass<T: BufferData>(&mut self, data_list: &[T], vs_path: String, ps_path: String) -> Result<&mut RenderPass<B>, &'static str> {
-        let subpass = Subpass {
-            index: 0,
-            main_pass: &*self.main_pass,
-        };
+    // pub fn add_render_pass<T: BufferData>(&mut self, data_list: &[T], vs_path: String, ps_path: String) -> Result<(), &'static str> {
+    //     let subpass = Subpass {
+    //         index: 0,
+    //         main_pass: &*self.main_pass,
+    //     };
+    //
+    //     let effect = Effect::vertex_pixel::<T>(&self.device, vs_path, ps_path, &subpass)?;
+    //
+    //     let buffer = Buffer::vertex_buffer(data_list, &self.device, &self.adapter.physical_device);
+    //     let render_pass = RenderPass::<B>::new(effect, buffer);
+    //     self.render_passes.push(render_pass);
+    //     Ok(())
+    // }
 
-        let effect = Effect::vertex_pixel::<T>(&self.device, vs_path, ps_path, &subpass)?;
+    // pub fn create_buffer<T: BufferData>(&mut self, data_list: &[T]) -> Buffer<B> {
+    //     Buffer::vertex_buffer(data_list, &self.device, &self.adapter.physical_device)
+    // }
 
-        let buffer = Buffer::vertex_buffer(data_list, &self.device, &self.adapter.physical_device);
-        let render_pass = RenderPass::<B>::new(effect, buffer);
-        self.render_passes.push(render_pass);
-        let length = self.render_passes.len();
-        Ok(self.render_passes.get_mut(length - 1).unwrap())
-    }
+    // pub fn create_effect<T: BufferData>(&mut self, vs_path: String, ps_path: String) -> Result<Effect<B>, &'static str> {
+    //     let subpass = Subpass {
+    //         index: 0,
+    //         main_pass: &*self.main_pass,
+    //     };
+    //     Effect::vertex_pixel::<T>(&self.device, vs_path, ps_path, &subpass)
+    // }
 }
 
 impl<B: Backend> Drop for RenderState<B> {

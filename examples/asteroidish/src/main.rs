@@ -1,96 +1,89 @@
 use chaos_engine::engine::ChaosEngine;
 use std::time::Instant;
-use chaos_engine::ecs::service::ChaosRenderService;
-use chaos_engine::rendering::render_state::RenderState;
-use chaos_engine::ecs::manager::ChaosComponentManager;
+use chaos_engine::ecs::system::ChaosSystem;
+use chaos_engine::commands::manager::CmdManager;
+use chaos_engine::rendering::effect::Effect;
+use chaos_engine::rendering::buffer::{BufferData, Buffer};
 use chaos_engine::ChaosBackend;
-use chaos_engine::rendering::buffer::BufferData;
+use chaos_engine::commands::cmd::RenderCmd;
+use chaos_engine::rendering::render_context::RenderContext;
+use std::sync::{Arc, Mutex};
+use std::ops::DerefMut;
+use std::mem;
 
-
-// game renderer - renders asteroids, ship, explosions and lasers
-// asteroid service
-// ship service
-// lasers fired
-// explosions
-// split asteroids
-
-// asteroids are 1 quad with a generated texture (showing if there is a "rock" there or not)
-
-
-///
-/// Asteroid vertex information
-///
-struct AsteroidVertex {
+pub struct QuadVertex {
+    #[allow(unused)]
     pos: [f32; 2],
-    uv: [f32; 2],
 }
 
-impl BufferData for AsteroidVertex {
+impl BufferData for QuadVertex {
     fn layout() -> Vec<u32> {
-        return [0 as u32, 8 as u32].to_vec();
+        return [0 as u32].to_vec();
     }
 }
+const QUAD: [QuadVertex; 6] = [
+    QuadVertex{ pos: [-0.5, 0.33] },
+    QuadVertex{ pos: [ 0.5, 0.33] },
+    QuadVertex{ pos: [ 0.5,-0.33] },
 
-
-///
-/// Ship vertex information
-///
-struct ShipVertex {
-    pos: [f32; 2],
-    color: [f32; 3]
-}
-
-impl BufferData for ShipVertex {
-    fn layout() -> Vec<u32> {
-        return [0 as u32, 8 as u32].to_vec();
-    }
-}
-const SHIP_MESH: [ShipVertex; 3] = [
-    ShipVertex{ pos: [1.0, 0.5], color: [1.0, 0.0, 1.0] },
-    ShipVertex{ pos: [0.5, -0.5], color: [1.0, 1.0, 0.0] },
-    ShipVertex{ pos: [0.0, 0.5], color: [1.0, 0.0, 0.0] },
+    QuadVertex{ pos: [-0.5, 0.33] },
+    QuadVertex{ pos: [ 0.5,-0.33] },
+    QuadVertex{ pos: [-0.5,-0.33] }
 ];
 
-const SHIP_MESH_2: [ShipVertex; 3] = [
-    ShipVertex{ pos: [0.0, 0.5], color: [0.0, 0.0, 1.0] },
-    ShipVertex{ pos: [-0.5, -0.5], color: [0.0, 1.0, 0.0] },
-    ShipVertex{ pos: [-1.0, 0.5], color: [1.0, 0.0, 0.0] },
-];
-
-///
-/// GameRenderer
-///
-struct GameRenderer {
-    // store the asteroid buffer
-    // store lasers fired etc
+pub struct AsteroidSystem {
+    effect: Arc<Mutex<Effect<ChaosBackend>>>,
+    buffer: Arc<Mutex<Buffer<ChaosBackend, QuadVertex>>>,
 }
 
-impl GameRenderer {
-    fn new() -> GameRenderer {
-        GameRenderer{}
+impl AsteroidSystem {
+    pub fn new()-> AsteroidSystem  {
+        let stride = mem::size_of::<QuadVertex>();
+        let effect = Arc::new(Mutex::new(Effect::<ChaosBackend>::new_vs_ps("line.vert".to_string(), "line.frag".to_string(), stride , QuadVertex::layout())));
+        let buffer = Arc::new(Mutex::new(Buffer::<ChaosBackend, QuadVertex>::new(Vec::from(QUAD))));
+        AsteroidSystem{
+            effect,
+            buffer,
+        }
     }
 }
 
-impl ChaosRenderService for GameRenderer {
-    fn initialize(&mut self, render_state: &mut RenderState<ChaosBackend>) {
-        // initialize the renderers for both the spaceship and the asteroids
-        render_state.add_render_pass(&SHIP_MESH, "line.vert".to_string(), "line.frag".to_string());
-        render_state.add_render_pass(&SHIP_MESH_2, "line.vert".to_string(), "line.frag".to_string());
-
+impl ChaosSystem for AsteroidSystem {
+    fn initialize(&mut self, _cmd_manager: &mut CmdManager<ChaosBackend>) {
     }
 
-    fn update(&mut self, delta_time: f32, component_manager: &mut ChaosComponentManager, render_state: &mut RenderState<ChaosBackend>) {
-        // nothing yet
+    fn update(&mut self, _delta_time: f32, cmd_manager: &mut CmdManager<ChaosBackend>) {
+        cmd_manager.add_render_command(Box::new(AsteroidRenderCommand::new(self.effect.clone(), self.buffer.clone())));
     }
 }
 
+pub struct AsteroidRenderCommand {
+    effect: Arc<Mutex<Effect<ChaosBackend>>>,
+    buffer: Arc<Mutex<Buffer<ChaosBackend, QuadVertex>>>
+}
+
+impl AsteroidRenderCommand {
+    pub fn new(effect: Arc<Mutex<Effect<ChaosBackend>>>, buffer: Arc<Mutex<Buffer<ChaosBackend, QuadVertex>>>) -> AsteroidRenderCommand {
+        return AsteroidRenderCommand{
+            effect,
+            buffer
+        }
+    }
+}
+
+impl RenderCmd<ChaosBackend> for AsteroidRenderCommand {
+    fn render(&mut self, render_context: &mut RenderContext<ChaosBackend>) {
+        let mut b = self.buffer.lock().unwrap();
+        render_context.prepare_effect(self.effect.lock().unwrap().deref_mut());
+        render_context.prepare_buffer(b.deref_mut());
+        render_context.draw(0..b.get_length(), 0..1);
+    }
+}
 
 fn main() {
-
     let mut engine = ChaosEngine::new("Asteroidish".to_string(), 1024, 1024).unwrap();
-    engine.add_render_service(GameRenderer::new());
 
-
+    engine.add_system(AsteroidSystem::new());
     let mut current_time = Instant::now();
     loop {
         if !engine.process_events(){
@@ -99,7 +92,6 @@ fn main() {
         let delta_time = current_time.elapsed().as_secs_f32();
         current_time = Instant::now();
         engine.update(delta_time).unwrap();
-        engine.render(delta_time).unwrap();
-
+        engine.render().unwrap();
     }
 }

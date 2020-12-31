@@ -14,23 +14,43 @@ pub trait BufferData {
     fn layout() -> Vec<u32>;
 }
 
-pub struct Buffer<B: Backend> {
-    buffer: ManuallyDrop<B::Buffer>,
-    buffer_memory: ManuallyDrop<B::Memory>,
-    vertex_count: u32,
+pub struct Buffer<B: Backend, T: BufferData> {
+    data: Vec<T>,
+    initialized: bool,
+    // gfx things
+    buffer: Option<ManuallyDrop<B::Buffer>>,
+    #[allow(unused)]
+    buffer_memory: Option<ManuallyDrop<B::Memory>>,
+    vertex_count: usize,
 }
 
-impl<B: Backend> Buffer<B> {
-    pub fn vertex_buffer<T: BufferData>(data_list: &[T], device: &B::Device, physical_device: &B::PhysicalDevice) -> Buffer<B> {
+impl<B: Backend, T: BufferData> Buffer<B, T> {
+    //
+    pub fn new(data_list: Vec<T>) -> Buffer<B, T> {
+        let c = data_list.len();
+        return Buffer{
+            data: data_list,
+            initialized: false,
+            buffer: Option::None,
+            buffer_memory: Option::None,
+            vertex_count: c
+        }
+    }
+
+    pub fn initialize(&mut self, device: &B::Device, physical_device: &B::PhysicalDevice) {
+        if self.initialized {
+            return;
+        }
+
         let buffer_stride = mem::size_of::<T>() as usize;
-        let buffer_len = data_list.len() * buffer_stride;
+        let buffer_len = self.vertex_count * buffer_stride;
         // create empty buffer
         let (buffer_memory, buffer) =  unsafe {
-            Buffer::<B>::make_buffer(device,
+            Buffer::<B, T>::make_buffer(device,
                                      physical_device,
                                      buffer_len,
-                                    buffer::Usage::VERTEX,
-                                    Properties::CPU_VISIBLE)
+                                     buffer::Usage::VERTEX,
+                                     Properties::CPU_VISIBLE)
         };
 
         // fill it
@@ -46,7 +66,7 @@ impl<B: Backend> Buffer<B> {
                 .expect("Failed to map memory");
 
             // copy the memory to the buffer
-            std::ptr::copy_nonoverlapping(data_list.as_ptr() as *const u8, mapped_memory, buffer_len);
+            std::ptr::copy_nonoverlapping(self.data.as_ptr() as *const u8, mapped_memory, buffer_len);
 
             // Flushing the mapped memory ensures that the data we wrote to the
             // memory actually makes it to the graphics device. The copy alone does
@@ -60,21 +80,33 @@ impl<B: Backend> Buffer<B> {
 
             device.unmap_memory(&buffer_memory);
         }
+        self.buffer = Some(ManuallyDrop::new(buffer));
+        self.buffer_memory = Some(ManuallyDrop::new(buffer_memory));
 
-        Buffer { buffer: ManuallyDrop::new(buffer), buffer_memory: ManuallyDrop::new(buffer_memory), vertex_count: data_list.len() as u32 }
+        self.data.clear(); // no need to store the data anymor
+        self.initialized = true;
     }
 
-    pub fn bind_to_cmd_buffer(&mut self, cmd_buffer: &mut B::CommandBuffer) {
+    pub fn bind_to_cmd_buffer(&self, cmd_buffer: &mut B::CommandBuffer) {
+        if !self.initialized {
+            println!("Trying to bind un-initialized buffer to command buffer. Doing nothing instead");
+            return;
+        }
         unsafe {
-            cmd_buffer.bind_vertex_buffers(
-                0,
-                vec![(&*self.buffer, gfx_hal::buffer::SubRange::WHOLE)],
-            )
+            if let Some(b) = &self.buffer {
+                cmd_buffer.bind_vertex_buffers(
+                    0,
+                    vec![(&**b, gfx_hal::buffer::SubRange::WHOLE)],
+                )
+            }
         }
     }
 
+    pub fn is_initialized(&self) -> bool {
+        return self.initialized;
+    }
     pub fn get_length(&self) -> u32 {
-        return self.vertex_count;
+        return self.vertex_count as u32;
     }
 
     /// Create an empty buffer with the given size and properties.
@@ -148,7 +180,7 @@ impl<B: Backend> Buffer<B> {
     }
 }
 
-impl<B: Backend> Drop for Buffer<B> {
+impl<B: Backend, T: BufferData> Drop for Buffer<B, T> {
     fn drop(&mut self) {
         // self.device.free_memory(ManuallyDrop::into_inner(ptr::read(&self.buffer_memory)));
     }

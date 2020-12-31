@@ -6,8 +6,8 @@ use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Tell the build script to only run again if we change our source shaders
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=res/shaders");
+    // println!("cargo:rerun-if-changed=build.rs");
+    // println!("cargo:rerun-if-changed=res/shaders");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 

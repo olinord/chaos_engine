@@ -2,9 +2,11 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
 use ecs::{EntityID, LookupID};
-use ecs::component::Component;
+use ecs::component::{Component, RenderComponent};
 use ecs::errors::ComponentErrors::{ComponentCastError, ComponentLookupNotFound, ComponentNotFound, EntityNotFound};
 use ecs::errors::ComponentErrors;
+use ecs::communicator::ChaosCommunicator;
+use std::sync::mpsc::Receiver;
 
 pub struct ChaosComponentManager {
     entity_index: HashMap<EntityID, HashMap<TypeId, LookupID>>,
@@ -12,8 +14,9 @@ pub struct ChaosComponentManager {
     components: HashMap<LookupID, Box<dyn Any>>,
     current_entity_id: EntityID,
     current_index_id: LookupID,
+    communicator: ChaosCommunicator,
+    render_component_types: Vec<TypeId>
 }
-
 
 impl ChaosComponentManager {
     pub fn default() -> ChaosComponentManager {
@@ -27,7 +30,17 @@ impl ChaosComponentManager {
             components: HashMap::with_capacity(initial_component_capacity),
             current_entity_id: 0,
             current_index_id: 0,
+            communicator: ChaosCommunicator::new(),
+            render_component_types: Vec::new()
         }
+    }
+
+    pub fn subscribe_to_add<T: Component>(&mut self) -> Receiver<EntityID>{
+        self.communicator.register_for_add::<T>()
+    }
+
+    pub fn subscribe_to_remove<T: Component>(&mut self) -> Receiver<EntityID>{
+        self.communicator.register_for_remove::<T>()
     }
 
     /// Creates an entity that can be used within the System
@@ -81,12 +94,22 @@ impl ChaosComponentManager {
                     or_insert(HashMap::new()).
                     insert(entity_id, id);
                 self.components.insert(id, Box::new(component));
+                self.communicator.notify_of_add::<T>(entity_id);
+
                 Ok(())
             }
             None => {
                 Err(EntityNotFound(entity_id))
             }
         }
+    }
+
+    pub fn add_renderable_component<T: RenderComponent<back::Backend>>(&mut self, entity_id: EntityID, component: T) -> Result<(), ComponentErrors> {
+        let type_id = TypeId::of::<T>();
+        if !self.render_component_types.contains(&type_id) {
+            self.render_component_types.push(type_id);
+        }
+        return self.add_component::<T>(entity_id, component);
     }
 
     fn lookup_component<T: Component>(&self, lookup_id: &LookupID) -> Result<&T, ComponentErrors> {
@@ -146,8 +169,9 @@ impl ChaosComponentManager {
     /// assert!(cm.get_all_components::<Position>().is_err());
     /// let entity_id = cm.create_entity();
     /// cm.add_component::<Position>(entity_id, Position{x: 0.0, y: 0.0,});
-    /// assert!(cm.get_all_components::<Position>().is_ok());
-    ///
+    /// let result = cm.get_all_components::<Position>();
+    /// assert!(result.is_ok());
+    /// assert!(result.unwrap().len() == 1);
     /// ```
     pub fn get_all_components<T: Component>(&self) -> Result<Vec<(&EntityID, &T)>, ComponentErrors> {
         match self.component_index.get(&TypeId::of::<T>()) {
@@ -157,6 +181,28 @@ impl ChaosComponentManager {
                     match self.lookup_component::<T>(lookup_id) {
                         Ok(c) => {
                             result.push((entity_id, c));
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    };
+                }
+                Ok(result)
+            }
+            None => {
+                Err(ComponentNotFound(TypeId::of::<T>()))
+            }
+        }
+    }
+
+    pub fn get_all_components_of_type<T: Component>(&self) -> Result<Vec<&T>, ComponentErrors> {
+        match self.component_index.get(&TypeId::of::<T>()) {
+            Some(components) => {
+                let mut result: Vec<&T> = Vec::new();
+                for (_, lookup_id) in components.iter() {
+                    match self.lookup_component::<T>(lookup_id) {
+                        Ok(c) => {
+                            result.push(&c);
                         }
                         Err(e) => {
                             return Err(e);
@@ -220,7 +266,7 @@ impl ChaosComponentManager {
     }
 
     /// Removes a component from an entity
-    pub fn remove_component<T: Component>(&mut self, entity_id: u64) -> Result<(), ComponentErrors> {
+    pub fn remove_component<T: Component>(&mut self, entity_id: EntityID) -> Result<(), ComponentErrors> {
         let type_id = TypeId::of::<T>();
         let lookup_id = self.entity_index.get_mut(&entity_id).
             ok_or(EntityNotFound(entity_id)).
@@ -241,17 +287,19 @@ impl ChaosComponentManager {
         // remove from the entity list for the component type
         let component_entity_lookup = self.component_index.get_mut(&component_type).ok_or(ComponentNotFound(component_type))?;
         component_entity_lookup.remove(&entity_id);
+        self.communicator.notify_of_removal::<T>(entity_id);
 
         return Ok(());
     }
 
     /// Removes an entity
-    pub fn remove_entity(&mut self, entity_id: u64) -> Result<(), ComponentErrors> {
+    pub fn remove_entity(&mut self, entity_id: EntityID) -> Result<(), ComponentErrors> {
         let type_lookup = self.entity_index.remove(&entity_id).ok_or(EntityNotFound(entity_id))?;
 
         for (type_id, _) in type_lookup {
             let lookup_id = self.component_index.get_mut(&type_id).ok_or(ComponentNotFound(type_id))?.remove(&entity_id).ok_or(EntityNotFound(entity_id))?;
             self.components.remove(&lookup_id).ok_or(ComponentLookupNotFound(lookup_id))?;
+            self.communicator.notify_of_type_removal(&type_id, entity_id);
         }
 
         Ok(())
