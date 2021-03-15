@@ -1,15 +1,16 @@
 use chaos_engine::engine::ChaosEngine;
-use std::time::Instant;
 use chaos_engine::ecs::system::ChaosSystem;
-use chaos_engine::commands::manager::CmdManager;
+use chaos_engine::commands::manager::ChaosCmdManager;
 use chaos_engine::rendering::effect::Effect;
 use chaos_engine::rendering::buffer::{BufferData, Buffer};
 use chaos_engine::ChaosBackend;
-use chaos_engine::commands::cmd::RenderCmd;
+use chaos_engine::commands::cmd::{RenderCmd, ExitCmd};
 use chaos_engine::rendering::render_context::RenderContext;
 use std::sync::{Arc, Mutex};
 use std::ops::DerefMut;
 use std::mem;
+use chaos_engine::input::manager::ChaosDeviceEventManager;
+use chaos_engine::input::events::KeyCode;
 
 pub struct QuadVertex {
     #[allow(unused)]
@@ -49,10 +50,10 @@ impl AsteroidSystem {
 }
 
 impl ChaosSystem for AsteroidSystem {
-    fn initialize(&mut self, _cmd_manager: &mut CmdManager<ChaosBackend>) {
+    fn initialize(&mut self, _cmd_manager: &mut ChaosCmdManager<ChaosBackend>) {
     }
 
-    fn update(&mut self, _delta_time: f32, cmd_manager: &mut CmdManager<ChaosBackend>) {
+    fn update(&mut self, _delta_time: f32, cmd_manager: &mut ChaosCmdManager<ChaosBackend>) {
         cmd_manager.add_render_command(Box::new(AsteroidRenderCommand::new(self.effect.clone(), self.buffer.clone())));
     }
 }
@@ -80,18 +81,18 @@ impl RenderCmd<ChaosBackend> for AsteroidRenderCommand {
     }
 }
 
-fn main() {
-    let mut engine = ChaosEngine::new("Asteroidish".to_string(), 1024, 1024).unwrap();
 
-    engine.add_system(AsteroidSystem::new());
-    let mut current_time = Instant::now();
-    loop {
-        if !engine.process_events(){
-            break;
-        }
-        let delta_time = current_time.elapsed().as_secs_f32();
-        current_time = Instant::now();
-        engine.update(delta_time).unwrap();
-        engine.render().unwrap();
+
+fn main() {
+
+    let mut input_manager = ChaosDeviceEventManager::new();
+    input_manager.register_single_key_press::<ExitCmd>(KeyCode::Escape);
+
+    let result = ChaosEngine::new("Asteroidish".to_string(), 1024, 1024).unwrap().
+        add_system(AsteroidSystem::new()).
+        set_input_manager(&mut input_manager).run();
+
+    if let Err(r) = result {
+        println!("Engine shut down due to {}", r);
     }
 }

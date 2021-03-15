@@ -1,23 +1,28 @@
-use winit::{dpi::LogicalSize, Event, EventsLoop, WindowEvent};
+use winit::{dpi::LogicalSize, EventsLoop};
 
 use ecs::{
     manager::ChaosComponentManager,
     system::ChaosSystem
 };
 use rendering::render_state::RenderState;
-use commands::manager::CmdManager;
+use commands::manager::ChaosCmdManager;
+use input::manager::ChaosDeviceEventManager;
+use std::time::Instant;
+use commands::cmd::ExitCmd;
 
-pub struct ChaosEngine {
+pub struct ChaosEngine<'a> {
     render_state: RenderState<back::Backend>,
     events_loop: EventsLoop,
+    input_manager: Option<&'a mut ChaosDeviceEventManager>,
     #[allow(unused)]
     chaos_manager: ChaosComponentManager,
     systems: Vec<Box<dyn ChaosSystem>>,
-    command_manager: CmdManager<back::Backend>
+    command_manager: ChaosCmdManager<back::Backend>,
+    running: bool
 }
 
-impl ChaosEngine {
-    pub fn new(name: String, width: u32, height: u32) -> Result<ChaosEngine, &'static str> {
+impl<'a> ChaosEngine<'a> {
+    pub fn new(name: String, width: u32, height: u32) -> Result<ChaosEngine<'a>, &'static str> {
         let events_loop = EventsLoop::new();
 
         let wb = winit::WindowBuilder::new()
@@ -37,17 +42,36 @@ impl ChaosEngine {
             render_state,
             chaos_manager: ChaosComponentManager::new(100, 10),
             systems: Vec::new(),
-            command_manager: CmdManager::new()
+            command_manager: ChaosCmdManager::new(),
+            input_manager: Option::None,
+            running: false
         })
     }
 
+    pub fn process_events(&mut self)  {
+
+        let mut events = Vec::new();
+        self.events_loop.poll_events(|event| match event {
+            _ => events.push(event)
+        });
+
+        for type_id in self.input_manager.as_mut().unwrap().get_commands(&events) {
+            self.command_manager.add_command_raw(type_id);
+        }
+    }
+
     pub fn update(&mut self, delta_time: f32) -> Result<(), &'static str> {
-        self.command_manager.clear_commands();
+
+        self.process_events();
 
         // update the systems with the commands from inputs etc
         for system in self.systems.iter_mut() {
-            // systems may or may not create render commands rendering
+            // systems may or may not create render commands
             system.update(delta_time, &mut self.command_manager);
+        }
+
+        if self.command_manager.has_command::<ExitCmd>() {
+            self.running = false;
         }
 
         Ok(())
@@ -60,27 +84,39 @@ impl ChaosEngine {
         return result;
     }
 
-    pub fn process_events(&mut self) -> bool {
-        let mut stop_engine = true;
-        self.events_loop.poll_events(|event| match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => stop_engine = false,
-            _ => stop_engine = true,
-        });
-        return stop_engine;
-    }
-
     /// Adds a system to the manager and initializes it
-    pub fn add_system<CS: 'static + ChaosSystem>(&mut self, system: CS) -> &Box<dyn ChaosSystem>{
+    pub fn add_system<CS: 'static + ChaosSystem>(&mut self, system: CS) -> &mut ChaosEngine<'a> {
         self.systems.push(Box::new(system));
         self.systems.last_mut().unwrap().initialize(&mut self.command_manager);
-        self.systems.last().unwrap()
+        self
+    }
+
+    pub fn set_input_manager(&mut self, input_manager: &'a mut ChaosDeviceEventManager) -> &mut ChaosEngine<'a> {
+        self.input_manager = Some(input_manager);
+        self
+    }
+
+    pub fn run(&mut self) -> Result<(), &'static str> {
+        let mut current_time= Instant::now();
+        self.running = true;
+        loop {
+            self.command_manager.clear_commands();
+            let delta_time = current_time.elapsed().as_secs_f32();
+            self.update(delta_time).unwrap();
+
+            if !self.running {
+                break;
+            }
+
+            self.render().unwrap();
+            current_time = Instant::now();
+        }
+        return Ok(());
     }
 }
 
-impl Drop for ChaosEngine {
+
+impl<'a> Drop for ChaosEngine<'a> {
     fn drop(&mut self) {
         self.systems.clear();
     }
