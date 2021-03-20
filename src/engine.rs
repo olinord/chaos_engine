@@ -7,6 +7,7 @@ use ecs::{
 use rendering::render_state::RenderState;
 use commands::manager::ChaosCmdManager;
 use input::manager::ChaosDeviceEventManager;
+use input::events::ChaosDeviceDetailedEvent;
 use std::time::Instant;
 use commands::cmd::ExitCmd;
 
@@ -52,7 +53,7 @@ impl<'a> ChaosEngine<'a> {
 
         let mut events = Vec::new();
         self.events_loop.poll_events(|event| match event {
-            _ => events.push(event)
+            _ => events.push(ChaosDeviceDetailedEvent::from(&event) )
         });
 
         for type_id in self.input_manager.as_mut().unwrap().get_commands(&events) {

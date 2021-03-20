@@ -86,7 +86,7 @@ impl RenderCmd<ChaosBackend> for AsteroidRenderCommand {
 fn main() {
 
     let mut input_manager = ChaosDeviceEventManager::new();
-    input_manager.register_single_key_press::<ExitCmd>(KeyCode::Escape);
+    input_manager.register_multi_key_press::<ExitCmd>(KeyCode::Escape, 3);
 
     let result = ChaosEngine::new("Asteroidish".to_string(), 1024, 1024).unwrap().
         add_system(AsteroidSystem::new()).

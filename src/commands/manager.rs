@@ -1,7 +1,7 @@
-use commands::cmd::{Cmd, RenderCmd};
+use commands::cmd::RenderCmd;
 use gfx_hal::Backend;
 use std::slice::IterMut;
-use std::any::TypeId;
+use std::any::{TypeId, Any};
 
 pub struct ChaosCmdManager<B: Backend> {
     commands: Vec<TypeId>,
@@ -13,7 +13,7 @@ impl <B:Backend> ChaosCmdManager<B> {
         ChaosCmdManager::<B>{ commands: Vec::new(), render_commands: Vec::new() }
     }
 
-    pub fn add_command<T: 'static + Cmd>(&mut self) {
+    pub fn add_command<T: Any>(&mut self) {
         self.commands.push(TypeId::of::<T>());
     }
 
@@ -21,7 +21,7 @@ impl <B:Backend> ChaosCmdManager<B> {
         self.commands.push(type_id);
     }
 
-    pub fn has_command<T: 'static + Cmd>(&self) -> bool {
+    pub fn has_command<T: Any>(&self) -> bool {
         return self.commands.contains(&TypeId::of::<T>());
     }
 
