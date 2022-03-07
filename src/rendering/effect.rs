@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::mem::ManuallyDrop;
 
 use gfx_hal::Backend;
@@ -8,25 +9,19 @@ use gfx_hal::pass::Subpass;
 use gfx_hal::pso::{AttributeDesc, BlendState, ColorBlendDesc, ColorMask, Element, EntryPoint, GraphicsPipelineDesc, InputAssemblerDesc, Location, Primitive, PrimitiveAssemblerDesc, Rasterizer, Specialization, VertexBufferDesc, VertexInputRate, DescriptorSetLayoutBinding, ShaderStageFlags, Face};
 
 use super::spirv_reflect::*;
-use super::spirv_reflect::types::{ReflectFormat, ReflectInterfaceVariable, ReflectBlockVariable};
+use super::spirv_reflect::types::{ReflectFormat, ReflectInterfaceVariable};
 use std::path::PathBuf;
 use std::io::Read;
-use std::collections::HashMap;
 use std::ops::Range;
 
-pub trait PushConstantData {
-    fn get_data_for_shader(&self) -> Vec<u32>;
-}
-
-pub struct Effect<B: Backend> {
+pub struct Effect<B: Backend, T: Any> {
     vertex_shader_path: Option<String>,
     pixel_shader_path: Option<String>,
-
     pipeline: Option<ManuallyDrop<B::GraphicsPipeline>>,
     pipeline_layout: Option<ManuallyDrop<B::PipelineLayout>>,
     vertex_shader: Option<ShaderInfo>,
     pixel_shader: Option<ShaderInfo>,
-    push_constants: HashMap<String, Vec<u32>>,
+    const_parameter: Option<T>,
     stride: usize,
     shader_layout: Vec<u32>,
     initialized: bool
@@ -37,14 +32,13 @@ struct ShaderInfo {
     path: String,
     entry_point_name: String,
     code: Vec<u32>,
-    attributes: Vec<AttributeDesc>,
-    push_constants: HashMap<String, u32>
+    attributes: Vec<AttributeDesc>
 }
 
-// https://github.com/rust-tutorials/learn-gfx-hal/blob/master/examples/shaders.rs
-impl<B: Backend> Effect<B>
+// https://www.falseidolfactory.com/2020/04/01/intro-to-gfx-hal-part-2-push-constants.html
+impl<B: Backend, T: Any> Effect<B, T>
 {
-    pub fn new_vs_ps(vs_path: String, ps_path: String, stride: usize, shader_layout: Vec<u32>) -> Effect<B> {
+    pub fn new_vs_ps(vs_path: String, ps_path: String, stride: usize, shader_layout: Vec<u32>) -> Effect<B, T> {
         return Effect {
             vertex_shader_path: Some(vs_path),
             pixel_shader_path: Some(ps_path),
@@ -52,7 +46,7 @@ impl<B: Backend> Effect<B>
             pipeline_layout: None,
             vertex_shader: None,
             pixel_shader: None,
-            push_constants: HashMap::new(),
+            const_parameter: None,
             stride,
             shader_layout,
             initialized: false
@@ -78,7 +72,10 @@ impl<B: Backend> Effect<B>
                 .map_err(|_| "Couldn't make a DescriptorSetLayout")?
         }];
         let mut push_constants = Vec::<(ShaderStageFlags, Range<u32>)>::new();
-        push_constants.push((ShaderStageFlags::VERTEX, 1..16));
+        let push_constant_bytes = std::mem::size_of::<T>() as u32;
+
+        push_constants.push((ShaderStageFlags::VERTEX, 0..push_constant_bytes));
+        push_constants.push((ShaderStageFlags::FRAGMENT, 0..push_constant_bytes));
 
         let pipeline_layout = ManuallyDrop::new(
             unsafe {
@@ -161,9 +158,21 @@ impl<B: Backend> Effect<B>
         return self.initialized;
     }
 
-    pub fn set_push_constant(&mut self, constant_name: String, constant_value: Vec::<u32>) {
-        self.push_constants.insert(constant_name, constant_value);
+    pub fn set_push_constant(&mut self, constant: T) {
+        self.const_parameter = Some(constant);
     }
+
+    unsafe fn convert_const_parameter(&self) -> &[u32]
+    {
+        if self.const_parameter.is_none(){
+            return &[0];
+        }
+        let size_in_bytes = std::mem::size_of::<T>();
+        let size_in_u32s = size_in_bytes / std::mem::size_of::<u32>();
+        let start_ptr = self.const_parameter.as_ref().unwrap() as *const T as *const u32;
+        std::slice::from_raw_parts(start_ptr, size_in_u32s)
+    }
+
 
     pub fn bind_to_cmd_buffer(&self, cmd_buffer: &mut B::CommandBuffer) {
         if !self.initialized {
@@ -174,31 +183,19 @@ impl<B: Backend> Effect<B>
             cmd_buffer.bind_graphics_pipeline(self.pipeline.as_ref().unwrap());
 
             // set push constants here
-            for (name, constant) in &self.push_constants {
-                let const_name = name;
-                if let Some(v) = &self.vertex_shader {
-                    let vs_constant = v.push_constants.get(const_name);
-                    if let Some(constant_offset) = vs_constant {
-                        cmd_buffer.push_graphics_constants(
-                            self.pipeline_layout.as_ref().unwrap(),
-                            ShaderStageFlags::VERTEX,
-                            *constant_offset,
-                            constant.as_slice()
-                        );
-                    }
-                }
-                if let Some(p) = &self.pixel_shader {
-                    let ps_constant = p.push_constants.get(const_name);
-                    if let Some(constant_offset) = ps_constant {
-                        cmd_buffer.push_graphics_constants(
-                            self.pipeline_layout.as_ref().unwrap(),
-                            ShaderStageFlags::FRAGMENT,
-                            *constant_offset,
-                            constant.as_slice()
-                        );
-                    }
-                }
-            }
+            cmd_buffer.push_graphics_constants(
+                self.pipeline_layout.as_ref().unwrap(),
+                ShaderStageFlags::VERTEX,
+                0,
+                self.convert_const_parameter()
+            );
+
+            cmd_buffer.push_graphics_constants(
+                self.pipeline_layout.as_ref().unwrap(),
+                ShaderStageFlags::FRAGMENT,
+                0,
+                self.convert_const_parameter()
+            );
 
             cmd_buffer.bind_graphics_descriptor_sets(self.pipeline_layout.as_ref().unwrap(),
                                                      0,
@@ -230,19 +227,19 @@ impl ShaderInfo {
         let _output_vars = module.enumerate_output_variables(None).unwrap();
         let _bindings = module.enumerate_descriptor_bindings(None).unwrap();
         let _sets = module.enumerate_descriptor_sets(None).unwrap();
-        let _constants = module.enumerate_push_constant_blocks(None).unwrap();
+        let constants = module.enumerate_push_constant_blocks(None).unwrap();
 
         let input_vars = module.enumerate_input_variables(None).unwrap();
         for var in &input_vars {
             println!(
-                "   input var - name: {} location: {}",
+                "\tinput var - name: {} location: {}",
                 var.name, var.location
             );
         }
-        for constant in &_constants {
-            println!("    Constant - name {} offset {} size {}", constant.name, constant.offset, constant.size);
+        for constant in &constants {
+            println!("\tConstant - name {} offset {} size {}", constant.name, constant.offset, constant.size);
             for member in &constant.members {
-                println!("    Member - name {} offset {} size {}", member.name, member.offset, member.size);
+                println!("\t\tMember - name {} offset {} size {}", member.name, member.offset, member.size);
             }
         }
 
@@ -251,7 +248,6 @@ impl ShaderInfo {
             entry_point_name: _entry_point_name,
             code: module.get_code(),
             attributes: ShaderInfo::get_attribute_vec(&input_vars, &layout, &effect_path, binding),
-            push_constants: ShaderInfo::get_push_constants(&_constants)
         });
     }
 
@@ -261,7 +257,7 @@ impl ShaderInfo {
         for attr in input_vars.as_slice() {
             attributes.push(AttributeDesc {
                 location: Location::from(attr.location),
-                binding: binding, // Is this for multiple buffers?
+                binding, // Is this for multiple buffers?
                 element: Element {
                     format: match attr.format {
                         ReflectFormat::R32_UINT => Format::R32Uint,
@@ -287,16 +283,4 @@ impl ShaderInfo {
         }
         attributes
     }
-
-    fn get_push_constants(constants: &Vec<ReflectBlockVariable>) -> HashMap<String, u32> {
-        let mut constant_map = HashMap::new();
-        for constant in constants.as_slice() {
-            constant_map.insert(String::from(&constant.name), constant.size);
-        }
-        constant_map
-    }
-
-    // fn get_push_offsets(&self) -> Range<u32> {
-    //     return Range::<u32>{ start: 0, end: self.push_constants.len() as u32};
-    // }
 }

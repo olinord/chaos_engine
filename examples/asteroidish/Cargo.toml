@@ -14,3 +14,7 @@ path="../../"
 default-features = false # do not include the default features, and optionally
 # cherry-pick individual features
 features = ["metal"]
+
+[dependencies]
+array_tool = "1.0.0"
+rand = "0.8.4"

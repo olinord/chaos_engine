@@ -68,7 +68,7 @@ impl<'a> ChaosEngine<'a> {
         // update the systems with the commands from inputs etc
         for system in self.systems.iter_mut() {
             // systems may or may not create render commands
-            system.update(delta_time, &mut self.command_manager);
+            system.update(delta_time, &mut self.chaos_manager, &mut self.command_manager)?;
         }
 
         if self.command_manager.has_command::<ExitCmd>() {
@@ -88,7 +88,8 @@ impl<'a> ChaosEngine<'a> {
     /// Adds a system to the manager and initializes it
     pub fn add_system<CS: 'static + ChaosSystem>(&mut self, system: CS) -> &mut ChaosEngine<'a> {
         self.systems.push(Box::new(system));
-        self.systems.last_mut().unwrap().initialize(&mut self.command_manager);
+        let added_system = self.systems.last_mut().unwrap();
+        added_system.initialize(&mut self.chaos_manager, &mut self.command_manager);
         self
     }
 
@@ -103,6 +104,7 @@ impl<'a> ChaosEngine<'a> {
         loop {
             self.command_manager.clear_commands();
             let delta_time = current_time.elapsed().as_secs_f32();
+            current_time = Instant::now();
             self.update(delta_time).unwrap();
 
             if !self.running {
@@ -110,7 +112,6 @@ impl<'a> ChaosEngine<'a> {
             }
 
             self.render().unwrap();
-            current_time = Instant::now();
         }
         return Ok(());
     }

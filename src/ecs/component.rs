@@ -9,3 +9,4 @@ pub trait RenderComponent<T: Backend>: Any{
     fn initialize(&mut self, render_state: &mut RenderState<T>) -> Result<(), &'static str>;
     fn needs_initializing(&self) -> bool;
 }
+

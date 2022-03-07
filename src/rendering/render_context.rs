@@ -1,3 +1,4 @@
+use std::any::Any;
 use gfx_hal::{Backend, VertexCount};
 use rendering::effect::Effect;
 use gfx_hal::pass::Subpass;
@@ -25,7 +26,7 @@ impl<'a, B: Backend> RenderContext<'a, B> {
         }
     }
 
-    pub fn prepare_effect(&mut self, effect: &mut Effect<B>) {
+    pub fn prepare_effect<T: Any>(&mut self, effect: &mut Effect<B, T>) {
         if !effect.is_initialized() {
             let subpass = Subpass {
                 index: 0,
