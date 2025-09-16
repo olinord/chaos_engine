@@ -1,15 +1,12 @@
-#version 450
 
-layout(push_constant) uniform fragmentPushConstants {
-    vec2 position;
-} u_pushConstants;
+#version 460
 
-layout(location = 0) in vec2 vs_in_position;
+layout(location = 0) in vec2 position;
+layout(location = 1) in vec4 color;
 
-layout(location = 0) out vec3 vs_out_color;
-
+layout(location = 0) out vec4 v_color;
 
 void main() {
-    gl_Position = vec4(vs_in_position + u_pushConstants.position, 0.0, 1.0);
-    vs_out_color =  vec3(u_pushConstants.position, 0.5);
+    gl_Position = vec4(position, 0.0, 1.0);
+    v_color = color;
 }

@@ -1,7 +1,16 @@
-use commands::manager::ChaosCmdManager;
-use ecs::manager::ChaosComponentManager;
+use std::any::{Any, TypeId};
 
-pub trait ChaosSystem {
-    fn initialize(&mut self, component_manager: &mut ChaosComponentManager, cmd_manager: &mut ChaosCmdManager<back::Backend>);
-    fn update(&mut self, delta_time: f32, component_manager: &mut ChaosComponentManager, cmd_manager: &mut ChaosCmdManager<back::Backend>) -> Result<(), &'static str>;
+use crate::ecs::manager::ChaosComponentManager;
+
+pub trait ChaosSystem: Any {
+    fn initialize(&mut self, component_manager: &mut ChaosComponentManager);
+    fn update(
+        &mut self,
+        delta_time: f32,
+        component_manager: &mut ChaosComponentManager,
+    ) -> Result<(), &'static str>;
+
+    fn get_dependencies(&self) -> Vec<TypeId> {
+        Vec::new()
+    }
 }

@@ -1,6 +1,6 @@
 use std::any::TypeId;
 
-use ecs::{EntityID, LookupID};
+use crate::ecs::{EntityID, LookupID};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum ComponentErrors {
@@ -9,4 +9,6 @@ pub enum ComponentErrors {
     DuplicateComponent(TypeId),
     ComponentCastError(TypeId),
     ComponentLookupNotFound(LookupID),
+    AddComponentMessageNotSent(String),
+    RemoveComponentMessageNotSent(String),
 }

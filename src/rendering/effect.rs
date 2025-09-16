@@ -1,4 +1,291 @@
-use std::any::Any;
+use std::{fmt::Display, path::PathBuf, sync::Arc};
+
+use vulkano::{
+    device::Device,
+    pipeline::{
+        GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
+        graphics::{
+            GraphicsPipelineCreateInfo,
+            color_blend::{ColorBlendAttachmentState, ColorBlendState},
+            input_assembly::InputAssemblyState,
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            vertex_input::{Vertex, VertexDefinition},
+            viewport::{Viewport, ViewportState},
+        },
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+    },
+    render_pass::{RenderPass, Subpass},
+    shader,
+};
+
+#[derive(Debug, Clone)]
+pub enum CEEffectType {
+    Rendering,
+    Compute,
+    Raytracing,
+}
+
+#[derive(Debug, Clone)]
+pub enum CEEffectBuildError {
+    MissingDevice,
+    MissingPixelShader { vertex_shader_path: String },
+    MissingVertexShader { pixel_shader_path: String },
+    UndefinedShaderType,
+    InvalidShader { shader_path: String, error: String },
+    ShaderNotFound { shader_path: String, error: String },
+    MissingEntryPoint { shader_path: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct CEEffect {
+    pub pipeline: Arc<GraphicsPipeline>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CEEffectBuilder {
+    vertex_shader_path: Option<String>,
+    vertex_entry_point: Option<String>,
+    pixel_shader_path: Option<String>,
+    pixel_entry_point: Option<String>,
+    device: Option<Arc<Device>>,
+    effect_type: CEEffectType,
+    viewport: Option<Arc<Viewport>>,
+    subpass: Option<Subpass>,
+}
+
+impl CEEffectBuilder {
+    pub fn new(effect_type: CEEffectType) -> Self {
+        CEEffectBuilder {
+            vertex_shader_path: None,
+            vertex_entry_point: None,
+            pixel_shader_path: None,
+            pixel_entry_point: None,
+            device: None,
+            effect_type: effect_type,
+            viewport: None,
+            subpass: None,
+        }
+    }
+
+    fn load_shader(
+        path: &String,
+        entry_point: &String,
+        device: &Arc<Device>,
+    ) -> Result<vulkano::shader::EntryPoint, CEEffectBuildError> {
+        // modify the path to be in the res/shader path
+        let mut path = PathBuf::from("res/shaders").join(PathBuf::from(path));
+
+        let path_to_exec = std::env::current_exe().unwrap();
+        let path_to_exec_folder = path_to_exec.parent().unwrap();
+        // and relative to the executable
+        path = path_to_exec_folder.join(path);
+        // and ends with spv
+        path.set_extension("spv");
+        println!("Loading shader from: {}", path.display());
+
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                return Err(CEEffectBuildError::ShaderNotFound {
+                    shader_path: path.display().to_string(),
+                    error: e.to_string(),
+                });
+            }
+        };
+
+        let words = match shader::spirv::bytes_to_words(&bytes) {
+            Ok(b) => b,
+            Err(e) => {
+                return Err(CEEffectBuildError::InvalidShader {
+                    shader_path: path.display().to_string(),
+                    error: e.to_string(),
+                });
+            }
+        };
+
+        let vs_shader_creation = shader::ShaderModuleCreateInfo::new(&words);
+        let module = unsafe {
+            shader::ShaderModule::new(device.clone(), vs_shader_creation).map_err(|e| {
+                CEEffectBuildError::InvalidShader {
+                    shader_path: path.display().to_string(),
+                    error: e.to_string(),
+                }
+            })?
+        };
+        return Ok(module.entry_point(&entry_point.as_str()).unwrap());
+    }
+
+    pub fn with_device(mut self, device: Arc<Device>) -> Self {
+        self.device = Some(device);
+        self
+    }
+
+    pub fn with_viewport(mut self, viewport: Arc<Viewport>) -> Self {
+        self.viewport = Some(viewport);
+        self
+    }
+
+    pub fn with_vertex_shader(mut self, path: String, entry_point: String) -> Self {
+        self.vertex_shader_path = Some(format!("{}.spv", path));
+        self.vertex_entry_point = Some(entry_point);
+        self
+    }
+
+    pub fn with_pixel_shader(mut self, path: String, entry_point: String) -> Self {
+        self.pixel_shader_path = Some(format!("{}.spv", path));
+        self.pixel_entry_point = Some(entry_point);
+        self
+    }
+
+    pub fn with_render_pass(mut self, render_pass: Arc<RenderPass>) -> Self {
+        // just a dummy to make sure the render pass is there
+        self.subpass = Some(Subpass::from(render_pass.clone(), 0).unwrap());
+        self
+    }
+
+    fn build_rendering_effect<T: Vertex>(&self) -> Result<CEEffect, CEEffectBuildError> {
+        let device = self.device.clone().unwrap().clone();
+
+        if self.vertex_shader_path.is_none() {
+            return Err(CEEffectBuildError::MissingVertexShader {
+                pixel_shader_path: self.pixel_shader_path.clone().unwrap(),
+            });
+        }
+        if self.pixel_shader_path.is_none() {
+            return Err(CEEffectBuildError::MissingPixelShader {
+                vertex_shader_path: self.vertex_shader_path.clone().unwrap(),
+            });
+        }
+        if self.vertex_entry_point.is_none() {
+            return Err(CEEffectBuildError::MissingEntryPoint {
+                shader_path: self.vertex_shader_path.clone().unwrap(),
+            });
+        }
+        if self.pixel_entry_point.is_none() {
+            return Err(CEEffectBuildError::MissingEntryPoint {
+                shader_path: self.pixel_shader_path.clone().unwrap(),
+            });
+        }
+
+        let viewport: Viewport = self.viewport.clone().unwrap().as_ref().clone();
+
+        let vs_entry = Self::load_shader(
+            &self.vertex_shader_path.clone().unwrap(),
+            &self.vertex_entry_point.clone().unwrap(),
+            &device,
+        )?;
+
+        let ps_entry = Self::load_shader(
+            &self.pixel_shader_path.clone().unwrap(),
+            &self.pixel_entry_point.clone().unwrap(),
+            &device,
+        )?;
+
+        // pull out the vertex definition
+        let vertex_input_state = T::per_vertex().definition(&vs_entry).unwrap();
+
+        let stages = [
+            PipelineShaderStageCreateInfo::new(vs_entry),
+            PipelineShaderStageCreateInfo::new(ps_entry),
+        ];
+
+        // create the pipeline layout
+        let layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                .into_pipeline_layout_create_info(device.clone())
+                .unwrap(),
+        )
+        .unwrap();
+
+        let sub_pass = self.subpass.clone().unwrap();
+        let gp = GraphicsPipeline::new(
+            device.clone(),
+            None,
+            GraphicsPipelineCreateInfo {
+                // The stages of our pipeline, we have vertex and fragment stages.
+                stages: stages.into_iter().collect(),
+                // Describes the layout of the vertex input and how should it behave.
+                vertex_input_state: Some(vertex_input_state),
+                // Indicate the type of the primitives (the default is a list of triangles).
+                input_assembly_state: Some(InputAssemblyState::default()),
+                // Set the fixed viewport.
+                viewport_state: Some(ViewportState {
+                    viewports: [viewport].into_iter().collect(),
+                    ..Default::default()
+                }),
+                // Ignore these for now.
+                rasterization_state: Some(RasterizationState::default()),
+                multisample_state: Some(MultisampleState::default()),
+                color_blend_state: Some(ColorBlendState::with_attachment_states(
+                    (&sub_pass).num_color_attachments(),
+                    ColorBlendAttachmentState::default(),
+                )),
+                // This graphics pipeline object concerns the first pass of the render pass.
+                subpass: Some(sub_pass.into()),
+                ..GraphicsPipelineCreateInfo::layout(layout)
+            },
+        )
+        .unwrap();
+        Ok(CEEffect { pipeline: gp })
+    }
+
+    pub fn build<T: Vertex>(self) -> Result<CEEffect, CEEffectBuildError> {
+        if self.device.is_none() {
+            return Err(CEEffectBuildError::MissingDevice);
+        }
+
+        match self.effect_type {
+            CEEffectType::Rendering => self.build_rendering_effect::<T>(),
+            CEEffectType::Compute => {
+                unimplemented!("Compute effects")
+            }
+            CEEffectType::Raytracing => {
+                unimplemented!("Raytracing effects")
+            }
+        }
+    }
+}
+
+impl Display for CEEffectBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CEEffectBuildError::MissingDevice => write!(f, "No device specified for effect"),
+            CEEffectBuildError::MissingPixelShader { vertex_shader_path } => {
+                write!(
+                    f,
+                    "No pixel shader specified for effect with vertex shader '{}'",
+                    vertex_shader_path
+                )
+            }
+            CEEffectBuildError::MissingVertexShader { pixel_shader_path } => {
+                write!(
+                    f,
+                    "No vertex shader specified for effect with pixel shader '{}'",
+                    pixel_shader_path
+                )
+            }
+            CEEffectBuildError::UndefinedShaderType => {
+                write!(
+                    f,
+                    "No effect type specified (rendering, compute, raytracing)"
+                )
+            }
+            CEEffectBuildError::InvalidShader { shader_path, error } => {
+                write!(f, "Invalid shader '{}': {}", shader_path, error)
+            }
+            CEEffectBuildError::ShaderNotFound { shader_path, error } => {
+                write!(f, "Shader not found '{}': {}", shader_path, error)
+            }
+            CEEffectBuildError::MissingEntryPoint { shader_path } => {
+                write!(f, "No entry point specified for shader '{}'", shader_path)
+            }
+        }
+    }
+}
+
+/*use std::any::Any;
 use std::mem::ManuallyDrop;
 
 use gfx_hal::Backend;
@@ -283,4 +570,4 @@ impl ShaderInfo {
         }
         attributes
     }
-}
+}*/

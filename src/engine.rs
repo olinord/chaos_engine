@@ -1,126 +1,126 @@
-use winit::{dpi::LogicalSize, EventsLoop};
+use std::sync::Arc;
 
-use ecs::{
-    manager::ChaosComponentManager,
-    system::ChaosSystem
+use crate::{ecs::manager::ChaosComponentManager, rendering::rendering_system::ChaosRenderSystem};
+
+use winit::{
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, EventLoop},
+    raw_window_handle::HasDisplayHandle,
+    window::{WindowAttributes, WindowId},
 };
-use rendering::render_state::RenderState;
-use commands::manager::ChaosCmdManager;
-use input::manager::ChaosDeviceEventManager;
-use input::events::ChaosDeviceDetailedEvent;
-use std::time::Instant;
-use commands::cmd::ExitCmd;
-
-pub struct ChaosEngine<'a> {
-    render_state: RenderState<back::Backend>,
-    events_loop: EventsLoop,
-    input_manager: Option<&'a mut ChaosDeviceEventManager>,
-    #[allow(unused)]
-    chaos_manager: ChaosComponentManager,
-    systems: Vec<Box<dyn ChaosSystem>>,
-    command_manager: ChaosCmdManager<back::Backend>,
-    running: bool
+pub struct ChaosEngine {
+    component_manager: ChaosComponentManager,
+    window: Option<Arc<winit::window::Window>>,
+    title: String,
+    width: u32,
+    height: u32,
 }
 
-impl<'a> ChaosEngine<'a> {
-    pub fn new(name: String, width: u32, height: u32) -> Result<ChaosEngine<'a>, &'static str> {
-        let events_loop = EventsLoop::new();
-
-        let wb = winit::WindowBuilder::new()
-            .with_min_dimensions(
-                LogicalSize::new(64.0, 64.0)
-            )
-            .with_max_dimensions(
-                LogicalSize::new(width.into(), height.into())
-            )
-            .with_title(name.clone());
-        let window = wb.build(&events_loop).unwrap();
-
-        let render_state = RenderState::<back::Backend>::new(window).unwrap();
-
-        return Ok(ChaosEngine{
-            events_loop,
-            render_state,
-            chaos_manager: ChaosComponentManager::new(100, 10),
-            systems: Vec::new(),
-            command_manager: ChaosCmdManager::new(),
-            input_manager: Option::None,
-            running: false
+impl ChaosEngine {
+    pub fn new(title: &str, width: u32, height: u32) -> Result<ChaosEngine, &'static str> {
+        let component_manager = ChaosComponentManager::new(100, 10);
+        Ok(ChaosEngine {
+            component_manager,
+            window: None,
+            title: title.to_string(),
+            width,
+            height,
         })
     }
 
-    pub fn process_events(&mut self)  {
+    // pub fn initialize(&mut self) -> Result<(), &'static str> {
+    //     let rendering_system =
+    //         ChaosRenderSystem::new(window_system.get_event_loop(), window_system.get_window());
+    //     self.component_manager.add_system(window_system);
+    //     self.component_manager.add_system(rendering_system);
+    //     Ok(())
+    // }
 
-        let mut events = Vec::new();
-        self.events_loop.poll_events(|event| match event {
-            _ => events.push(ChaosDeviceDetailedEvent::from(&event) )
-        });
+    pub fn run(mut self) {
+        let event_loop = EventLoop::new().expect("Couldn't create an eventloop");
+        event_loop
+            .run_app(&mut self)
+            .expect("Failed to run event loop");
 
-        for type_id in self.input_manager.as_mut().unwrap().get_commands(&events) {
-            self.command_manager.add_command_raw(type_id);
-        }
+        // let render_system = self
+        //     .component_manager
+        //     .get_system::<ChaosRenderSystem>()
+        //     .unwrap();
+        // let window_system = self
+        //     .component_manager
+        //     .get_system::<ChaosWindowSystem>()
+        //     .unwrap();
+
+        // let event_loop = window_system.get_event_loop();
+
+        // event_loop.run_app(|event, _, control_flow| match event {
+        //     Event::WindowEvent {
+        //         event: WindowEvent::CloseRequested,
+        //         ..
+        //     } => {
+        //         *control_flow = winit::event_loop::ControlFlow::Exit;
+        //     }
+        //     Event::RedrawEventsCleared => {
+        //         render_system.render().unwrap();
+        //     }
+        //     _ => (),
+        // });
+    }
+}
+
+impl ApplicationHandler for ChaosEngine {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let size = PhysicalSize::new(self.width, self.height);
+        let window_attributes = WindowAttributes::default()
+            .with_title(self.title.clone())
+            .with_inner_size(size);
+
+        self.window = Some(Arc::new(
+            event_loop.create_window(window_attributes).unwrap(),
+        ));
+
+        let rendering_system = ChaosRenderSystem::new(
+            &event_loop.display_handle().unwrap(),
+            self.window.clone().unwrap(),
+        );
+        self.component_manager.add_system(rendering_system);
     }
 
-    pub fn update(&mut self, delta_time: f32) -> Result<(), &'static str> {
-
-        self.process_events();
-
-        // update the systems with the commands from inputs etc
-        for system in self.systems.iter_mut() {
-            // systems may or may not create render commands
-            system.update(delta_time, &mut self.chaos_manager, &mut self.command_manager)?;
-        }
-
-        if self.command_manager.has_command::<ExitCmd>() {
-            self.running = false;
-        }
-
-        Ok(())
-    }
-
-    pub fn render(&mut self) -> Result<(), &'static str> {
-        // render all the render commands generated by systems
-        let result = self.render_state.render(self.command_manager.get_render_commands());
-        self.command_manager.clear_render_commands();
-        return result;
-    }
-
-    /// Adds a system to the manager and initializes it
-    pub fn add_system<CS: 'static + ChaosSystem>(&mut self, system: CS) -> &mut ChaosEngine<'a> {
-        self.systems.push(Box::new(system));
-        let added_system = self.systems.last_mut().unwrap();
-        added_system.initialize(&mut self.chaos_manager, &mut self.command_manager);
-        self
-    }
-
-    pub fn set_input_manager(&mut self, input_manager: &'a mut ChaosDeviceEventManager) -> &mut ChaosEngine<'a> {
-        self.input_manager = Some(input_manager);
-        self
-    }
-
-    pub fn run(&mut self) -> Result<(), &'static str> {
-        let mut current_time= Instant::now();
-        self.running = true;
-        loop {
-            self.command_manager.clear_commands();
-            let delta_time = current_time.elapsed().as_secs_f32();
-            current_time = Instant::now();
-            self.update(delta_time).unwrap();
-
-            if !self.running {
-                break;
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => {
+                println!("The close button was pressed; stopping");
+                event_loop.exit();
             }
+            WindowEvent::RedrawRequested => {
+                println!("Redraw requested");
+                let c = &mut self.component_manager;
+                match c.get_system_mut::<ChaosRenderSystem>() {
+                    Some(s) => {
+                        s.render();
+                    }
+                    None => {
+                        println!("No rendering system found");
+                    }
+                };
+                // Redraw the application.
+                //
+                // It's preferable for applications that do not render continuously to render in
+                // this event rather than in AboutToWait, since rendering in here allows
+                // the program to gracefully handle redraws requested by the OS.
 
-            self.render().unwrap();
+                // Draw.
+
+                // Queue a RedrawRequested event.
+                //
+                // You only need to call this if you've determined that you need to redraw in
+                // applications which do not always need to. Applications that redraw continuously
+                // can render here instead.
+                self.window.as_ref().unwrap().request_redraw();
+            }
+            _ => (),
         }
-        return Ok(());
     }
 }
-
-
-impl<'a> Drop for ChaosEngine<'a> {
-    fn drop(&mut self) {
-        self.systems.clear();
-    }
-}
-

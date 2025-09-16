@@ -1,8 +1,8 @@
+use shaderc;
 use std::env;
+use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use shaderc;
-use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Tell the build script to only run again if we change our source shaders
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let shaders_path = Path::new(&executable_path).join("res/shaders/");
     let shaders_path_string = shaders_path.display().to_string();
 
-    let mut compiler = shaderc::Compiler::new().unwrap();
+    let compiler = shaderc::Compiler::new().unwrap();
     let options = shaderc::CompileOptions::new().unwrap();
     // options.add_macro_definition("EP", Some("main"));
 
@@ -30,32 +30,42 @@ fn main() -> Result<(), Box<dyn Error>> {
         fs::create_dir_all(&shaders_path_string).unwrap();
     }
 
-    for entry in std::fs::read_dir(Path::new( &manifest_dir).join("res/shaders"))? {
+    for entry in std::fs::read_dir(Path::new(&manifest_dir).join("res/shaders"))? {
         let entry = entry?;
 
         if entry.file_type()?.is_file() {
             let in_path = entry.path();
 
             // Support only vertex and fragment shaders currently
-            let shader_type = in_path.extension().and_then(|ext| {
-                match ext.to_string_lossy().as_ref() {
-                    "vert" => Some(shaderc::ShaderKind::Vertex),
-                    "frag" => Some(shaderc::ShaderKind::Fragment),
-                    _ => None,
-                }
-            });
+            let shader_type =
+                in_path
+                    .extension()
+                    .and_then(|ext| match ext.to_string_lossy().as_ref() {
+                        "vert" => Some(shaderc::ShaderKind::Vertex),
+                        "frag" => Some(shaderc::ShaderKind::Fragment),
+                        _ => None,
+                    });
 
             if let Some(shader_type) = shader_type {
                 println!("Compiling {}", in_path.to_string_lossy());
 
                 let source = std::fs::read_to_string(&in_path)?;
 
-                let binary_result = compiler.compile_into_spirv(
-                    source.as_str(), shader_type,
-                    in_path.file_name().unwrap().to_str().unwrap(), "main", Some(&options)).unwrap();
+                let binary_result = compiler
+                    .compile_into_spirv(
+                        source.as_str(),
+                        shader_type,
+                        in_path.file_name().unwrap().to_str().unwrap(),
+                        "main",
+                        Some(&options),
+                    )
+                    .unwrap();
 
                 if binary_result.get_num_warnings() > 0 {
-                    println!("Warning compiling {}", in_path.file_name().unwrap().to_string_lossy());
+                    println!(
+                        "Warning compiling {}",
+                        in_path.file_name().unwrap().to_string_lossy()
+                    );
                     println!("{}", binary_result.get_warning_messages());
                 }
 
@@ -69,12 +79,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 std::fs::write(&out_path, &binary_result.as_binary_u8())?;
             }
         }
-
     }
 
     Ok(())
 }
-
 
 fn locate_target_dir_from_output_dir(mut target_dir_search: &Path) -> Option<&Path> {
     loop {

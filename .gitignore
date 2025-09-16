@@ -11,3 +11,5 @@ Cargo.lock
 
 # Idea files
 /idea/*.*
+/examples/asteroidish/target
+/old
