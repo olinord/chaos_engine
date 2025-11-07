@@ -1,7 +1,10 @@
-use winit::{Event, WindowEvent, DeviceEvent, ElementState, VirtualKeyCode};
+use std::fmt::Display;
 use std::time::Instant;
 
-pub type KeyCode = VirtualKeyCode;
+use winit::event::WindowEvent;
+use winit::keyboard::{KeyCode, PhysicalKey};
+
+pub type ChaosKeyCode = KeyCode;
 
 // Event to use in registration
 #[derive(Hash, Eq, Copy, Clone)]
@@ -9,51 +12,39 @@ pub enum ChaosDeviceEventRegistration {
     CloseRequested,
     Focused,
     Unfocused,
-    Suspended,
-    Reanimated,
-    Resized,
-    // MouseEntered,
-    // MouseExited,
     KeyPress(KeyCode), // only handles keyboard input for now (keycode and if it is pressed)
-    MultiKeyPress(KeyCode, u128)
-    // InputMovement(InputMovementEvent),
+    MultiKeyPress(KeyCode, u8),
 }
 
 // This struct is to store the just what happened, just the basics and no details
-#[derive(Hash, Debug, Eq)]
+#[derive(Hash, Debug, Eq, Clone)]
 pub enum ChaosDeviceEvent {
     CloseRequested,
     Focused,
     Unfocused,
-    Suspended,
-    Reanimated,
-    // Resized,
     KeyPress(KeyCode),
-    Unrecognized
+    Unrecognized,
 }
 
 // Event that is created from a winit event
-#[derive(Hash, Eq, Debug)]
+#[derive(Hash, Eq, Debug, Clone)]
 pub enum ChaosDeviceDetailedEvent {
     CloseRequested,
     Focused,
     Unfocused,
-    Suspended,
-    Reanimated,
-    // Resized(f64, f64),
     KeyPress(KeyCode, bool), // only handles keyboard input for now (keycode and if it is pressed)
-    Unrecognized
+    Unrecognized,
 }
 
 // key state storage (to store how often we have pressed etc)
-#[derive(Hash, Eq)]
+#[derive(Hash, Eq, Clone)]
 pub struct ChaosDeviceEventState {
     button: KeyCode,
-    repeats: u128,
+    repeats: u8,
     pressed: bool,
     last_release_time: Instant,
     last_pressed_time: Instant,
-    actual_repeats: u128
+    actual_repeats: u8,
 }
 
 impl From<ChaosDeviceDetailedEvent> for ChaosDeviceEvent {
@@ -63,8 +54,6 @@ impl From<ChaosDeviceDetailedEvent> for ChaosDeviceEvent {
             ChaosDeviceDetailedEvent::Focused => ChaosDeviceEvent::Focused,
             ChaosDeviceDetailedEvent::CloseRequested => ChaosDeviceEvent::CloseRequested,
             ChaosDeviceDetailedEvent::Unfocused => ChaosDeviceEvent::Unfocused,
-            ChaosDeviceDetailedEvent::Reanimated => ChaosDeviceEvent::Reanimated,
-            ChaosDeviceDetailedEvent::Suspended => ChaosDeviceEvent::Suspended,
             ChaosDeviceDetailedEvent::Unrecognized => ChaosDeviceEvent::Unrecognized,
         }
     }
@@ -77,8 +66,6 @@ impl From<&ChaosDeviceDetailedEvent> for ChaosDeviceEvent {
             ChaosDeviceDetailedEvent::Focused => ChaosDeviceEvent::Focused,
             ChaosDeviceDetailedEvent::CloseRequested => ChaosDeviceEvent::CloseRequested,
             ChaosDeviceDetailedEvent::Unfocused => ChaosDeviceEvent::Unfocused,
-            ChaosDeviceDetailedEvent::Reanimated => ChaosDeviceEvent::Reanimated,
-            ChaosDeviceDetailedEvent::Suspended => ChaosDeviceEvent::Suspended,
             ChaosDeviceDetailedEvent::Unrecognized => ChaosDeviceEvent::Unrecognized,
         }
     }
@@ -100,10 +87,11 @@ impl PartialEq for ChaosDeviceDetailedEvent {
             return false;
         }
         match (self, other) {
-            (ChaosDeviceDetailedEvent::KeyPress(self_key, self_pressed), ChaosDeviceDetailedEvent::KeyPress(other_key, other_pressed)) => {
-                self_key == other_key && self_pressed == other_pressed
-            },
-            (_, _) => true
+            (
+                ChaosDeviceDetailedEvent::KeyPress(self_key, self_pressed),
+                ChaosDeviceDetailedEvent::KeyPress(other_key, other_pressed),
+            ) => self_key == other_key && self_pressed == other_pressed,
+            (_, _) => true,
         }
     }
 
@@ -113,58 +101,26 @@ impl PartialEq for ChaosDeviceDetailedEvent {
 }
 
 // Converter for winit::Event to ChaosDeviceEvent
-impl From<&winit::Event> for ChaosDeviceDetailedEvent {
-    fn from(event: &Event) -> Self {
+impl From<&WindowEvent> for ChaosDeviceDetailedEvent {
+    fn from(event: &WindowEvent) -> Self {
         match event {
-            Event::Suspended(ev) => {
-                if *ev {
-                    ChaosDeviceDetailedEvent::Suspended
-                }
-                else {
-                    ChaosDeviceDetailedEvent::Reanimated
-                }
-            },
-            Event::WindowEvent { event, .. } => {
-                match event {
-                    WindowEvent::CloseRequested => ChaosDeviceDetailedEvent::CloseRequested,
-                    WindowEvent::Focused(b) => {
-                        if *b {
-                            ChaosDeviceDetailedEvent::Focused
-                        }
-                        else {
-                            ChaosDeviceDetailedEvent::Unfocused
-                        }
-                    },
-                    WindowEvent::KeyboardInput {input, ..} => {
-                        if let Some(virtual_keycode) = input.virtual_keycode {
-                            return match input.state {
-                                ElementState::Pressed => ChaosDeviceDetailedEvent::KeyPress(virtual_keycode, true),
-                                ElementState::Released => ChaosDeviceDetailedEvent::KeyPress(virtual_keycode, false),
-                            }
-                        }
-                        ChaosDeviceDetailedEvent::Unrecognized
-                    },
-                    // WindowEvent::Resized(ls) => ChaosDeviceEvent::Resized(ls.width, ls.height),
-                    // WindowEvent::CursorEntered { .. } => ChaosDeviceEvent::MouseEntered,
-                    // WindowEvent::CursorLeft { .. } => ChaosDeviceEvent::MouseExited,
-                    _ => ChaosDeviceDetailedEvent::Unrecognized,
-                }
-            },
-            Event::DeviceEvent { event, .. } => {
-                match event {
-                    DeviceEvent::Key(input) => {
-                        if let Some(virtual_keycode) = input.virtual_keycode {
-                            match input.state {
-                                ElementState::Pressed => ChaosDeviceDetailedEvent::KeyPress(virtual_keycode, true),
-                                ElementState::Released => ChaosDeviceDetailedEvent::KeyPress(virtual_keycode, false),
-                            };
-                        }
-                        ChaosDeviceDetailedEvent::Unrecognized
-                    }
-                    _ => ChaosDeviceDetailedEvent::Unrecognized
+            WindowEvent::CloseRequested => ChaosDeviceDetailedEvent::CloseRequested,
+            WindowEvent::Focused(focused) => {
+                if *focused {
+                    ChaosDeviceDetailedEvent::Focused
+                } else {
+                    ChaosDeviceDetailedEvent::Unfocused
                 }
             }
-            _ => ChaosDeviceDetailedEvent::Unrecognized
+            WindowEvent::KeyboardInput { event, .. } => match event.physical_key {
+                PhysicalKey::Unidentified(_) => {
+                    return ChaosDeviceDetailedEvent::Unrecognized;
+                }
+                PhysicalKey::Code(key) => {
+                    return ChaosDeviceDetailedEvent::KeyPress(key, event.state.is_pressed());
+                }
+            },
+            _ => ChaosDeviceDetailedEvent::Unrecognized,
         }
     }
 }
@@ -172,15 +128,17 @@ impl From<&winit::Event> for ChaosDeviceDetailedEvent {
 impl From<ChaosDeviceEventRegistration> for ChaosDeviceDetailedEvent {
     fn from(cder: ChaosDeviceEventRegistration) -> Self {
         match cder {
-            ChaosDeviceEventRegistration::CloseRequested => ChaosDeviceDetailedEvent::CloseRequested,
-            ChaosDeviceEventRegistration::KeyPress(key) => ChaosDeviceDetailedEvent::KeyPress(key, true),
-            ChaosDeviceEventRegistration::MultiKeyPress(key, _) => ChaosDeviceDetailedEvent::KeyPress(key, true),
-            ChaosDeviceEventRegistration::Suspended => ChaosDeviceDetailedEvent::Suspended,
-            ChaosDeviceEventRegistration::Reanimated => ChaosDeviceDetailedEvent::Reanimated,
+            ChaosDeviceEventRegistration::CloseRequested => {
+                ChaosDeviceDetailedEvent::CloseRequested
+            }
+            ChaosDeviceEventRegistration::KeyPress(key) => {
+                ChaosDeviceDetailedEvent::KeyPress(key, true)
+            }
+            ChaosDeviceEventRegistration::MultiKeyPress(key, _) => {
+                ChaosDeviceDetailedEvent::KeyPress(key, true)
+            }
             ChaosDeviceEventRegistration::Focused => ChaosDeviceDetailedEvent::Focused,
             ChaosDeviceEventRegistration::Unfocused => ChaosDeviceDetailedEvent::Unfocused,
-            // ChaosDeviceEventRegistration::Resized => ChaosDeviceEvent::Resized,
-            _ => ChaosDeviceDetailedEvent::Unrecognized
         }
     }
 }
@@ -192,13 +150,15 @@ impl PartialEq for ChaosDeviceEventRegistration {
         }
 
         match (self, other) {
-            (ChaosDeviceEventRegistration::KeyPress(self_key_press), ChaosDeviceEventRegistration::KeyPress(other_key_press)) => {
-                self_key_press == other_key_press
-            },
-            (ChaosDeviceEventRegistration::MultiKeyPress(self_key_press, self_repeats), ChaosDeviceEventRegistration::MultiKeyPress(other_key_press, other_repeats)) => {
-                self_key_press == other_key_press && self_repeats == other_repeats
-            },
-            (_, _) => true
+            (
+                ChaosDeviceEventRegistration::KeyPress(self_key_press),
+                ChaosDeviceEventRegistration::KeyPress(other_key_press),
+            ) => self_key_press == other_key_press,
+            (
+                ChaosDeviceEventRegistration::MultiKeyPress(self_key_press, self_repeats),
+                ChaosDeviceEventRegistration::MultiKeyPress(other_key_press, other_repeats),
+            ) => self_key_press == other_key_press && self_repeats == other_repeats,
+            (_, _) => true,
         }
     }
 
@@ -211,26 +171,37 @@ impl PartialEq<ChaosDeviceDetailedEvent> for ChaosDeviceEventRegistration {
     fn eq(&self, other: &ChaosDeviceDetailedEvent) -> bool {
         // Only makes sure that the ChaosDeviceEvent is mapped to the same key as the ChaoInputEventRegistration
         match other {
-            ChaosDeviceDetailedEvent::KeyPress(input_key, _) => {
-                match self {
-                    ChaosDeviceEventRegistration::KeyPress(registration_input_key) => {
-                        input_key == registration_input_key
-                    },
-                    _ => false
+            ChaosDeviceDetailedEvent::KeyPress(input_key, _) => match self {
+                ChaosDeviceEventRegistration::KeyPress(registration_input_key) => {
+                    input_key == registration_input_key
                 }
+                _ => false,
             },
             ChaosDeviceDetailedEvent::Unfocused => *self == ChaosDeviceEventRegistration::Unfocused,
-            ChaosDeviceDetailedEvent::Reanimated => *self == ChaosDeviceEventRegistration::Reanimated,
-            // ChaosDeviceEvent::Resized(..) => self == ChaosDeviceEventRegistration::Resized,
             ChaosDeviceDetailedEvent::Focused => *self == ChaosDeviceEventRegistration::Focused,
-            ChaosDeviceDetailedEvent::Suspended => *self == ChaosDeviceEventRegistration::Suspended,
-            ChaosDeviceDetailedEvent::CloseRequested => *self == ChaosDeviceEventRegistration::CloseRequested,
-            _ => false
+            ChaosDeviceDetailedEvent::CloseRequested => {
+                *self == ChaosDeviceEventRegistration::CloseRequested
+            }
+            _ => false,
         }
     }
 
     fn ne(&self, other: &ChaosDeviceDetailedEvent) -> bool {
-        return !self.eq(other)
+        return !self.eq(other);
+    }
+}
+
+impl Display for ChaosDeviceEventRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChaosDeviceEventRegistration::CloseRequested => write!(f, "CloseRequested"),
+            ChaosDeviceEventRegistration::Focused => write!(f, "Focused"),
+            ChaosDeviceEventRegistration::Unfocused => write!(f, "Unfocused"),
+            ChaosDeviceEventRegistration::KeyPress(key) => write!(f, "KeyPress({:?})", key),
+            ChaosDeviceEventRegistration::MultiKeyPress(key, repeats) => {
+                write!(f, "MultiKeyPress({:?}, {})", key, repeats)
+            }
+        }
     }
 }
 
@@ -242,50 +213,52 @@ impl ChaosDeviceEventState {
             last_pressed_time: Instant::now(),
             last_release_time: Instant::now(),
             button: key,
-            actual_repeats: 0
-        }
+            actual_repeats: 0,
+        };
     }
 
-    pub fn new_multi(key: KeyCode, repeats: u128) -> ChaosDeviceEventState {
+    pub fn new_multi(key: KeyCode, repeats: u8) -> ChaosDeviceEventState {
         return ChaosDeviceEventState {
             pressed: false,
             repeats,
             last_pressed_time: Instant::now(),
             last_release_time: Instant::now(),
             button: key,
-            actual_repeats: 0
-        }
+            actual_repeats: 0,
+        };
     }
 
-    pub fn update(&mut self, device_event: &ChaosDeviceDetailedEvent, multi_press_time_delta_millis: u128) {
+    pub fn update(
+        &mut self,
+        device_event: &ChaosDeviceDetailedEvent,
+        multi_press_time_delta_millis: u128,
+    ) {
         match device_event {
             ChaosDeviceDetailedEvent::KeyPress(event_key_code, event_pressed) => {
-                if *event_key_code == self.button
-                {
+                if *event_key_code == self.button {
                     let now = Instant::now();
                     if *event_pressed {
                         // check if we are multi pressing
-                        if now.duration_since(self.last_pressed_time).as_millis() < multi_press_time_delta_millis {
+                        if now.duration_since(self.last_pressed_time).as_millis()
+                            < multi_press_time_delta_millis
+                        {
                             self.actual_repeats += 1;
                         } else {
                             // reset the repeats if we timed out
                             self.actual_repeats = 1;
                         }
                         self.last_release_time = now;
-                    }
-                    else{
+                    } else {
                         self.last_pressed_time = now;
                     }
 
                     self.pressed = !self.pressed;
                 }
-            },
-            _ => return
+            }
+            _ => return,
         };
-
     }
 }
-
 
 impl PartialEq for ChaosDeviceEventState {
     fn eq(&self, other: &ChaosDeviceEventState) -> bool {
@@ -302,11 +275,11 @@ impl PartialEq<ChaosDeviceEventRegistration> for ChaosDeviceEventState {
         match other {
             ChaosDeviceEventRegistration::KeyPress(key_code) => {
                 self.button == *key_code && self.pressed
-            },
+            }
             ChaosDeviceEventRegistration::MultiKeyPress(key_code, repeats) => {
                 self.button == *key_code && self.pressed && self.actual_repeats % repeats == 0
-            },
-            _ => false
+            }
+            _ => false,
         }
     }
 

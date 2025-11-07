@@ -22,21 +22,19 @@ use vulkano::{
 };
 use winit::{raw_window_handle::DisplayHandle, window::Window};
 
-use crate::{
-    ecs::{manager::ChaosComponentManager, system::ChaosSystem},
-    rendering::{
-        adapters::select_physical_device,
-        buffer::{CEBufferBuilder, CEBufferMemoryType, CEBufferUsage},
-        command_buffers::get_command_buffers,
-        effect::{CEEffectBuilder, CEEffectType},
-        swapchain::{get_framebuffers, get_render_pass, get_swapchain_and_backbuffers},
-    },
+use crate::rendering::{
+    adapters::select_physical_device,
+    buffer::{CEBufferBuilder, CEBufferMemoryType, CEBufferUsage},
+    command_buffers::get_command_buffers,
+    effect::{CEEffectBuilder, CEEffectType},
+    swapchain::{get_framebuffers, get_render_pass, get_swapchain_and_backbuffers},
 };
 pub type Fence = FenceSignalFuture<
     PresentFuture<CommandBufferExecFuture<JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture>>>,
 >;
 
 #[allow(unused)]
+#[derive(Clone)]
 pub struct ChaosRenderSystem {
     physical_device: Option<Arc<PhysicalDevice>>,
     device: Option<Arc<Device>>,
@@ -272,16 +270,4 @@ impl ChaosRenderSystem {
     //         &buffer.buffer,
     //     );
     // }
-}
-
-impl ChaosSystem for ChaosRenderSystem {
-    fn initialize(&mut self, _component_manager: &mut ChaosComponentManager) {}
-
-    fn update(
-        &mut self,
-        _delta_time: f32,
-        _component_manager: &mut ChaosComponentManager,
-    ) -> Result<(), &'static str> {
-        Ok(())
-    }
 }

@@ -6,5 +6,5 @@ The input strategy is this:
 - Keep a track of which buttons were pressed (at which time) or released (at which time) so we can properly handle double, triple, ... clicks
  */
 
-pub mod manager;
 pub mod events;
+pub mod manager;

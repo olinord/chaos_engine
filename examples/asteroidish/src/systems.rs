@@ -1,22 +1,21 @@
-use chaos_engine::ecs::system::ChaosSystem;
-use chaos_engine::commands::manager::ChaosCmdManager;
-use chaos_engine::ecs::manager::ChaosComponentManager;
+use crate::commands::{AsteroidPerObjectData, AsteroidRenderCommand, QUAD, QuadVertex};
+use crate::components::{AsteroidRenderComponent, CollisionComponent, PhysicsComponent, VoxelData};
+use crate::math::Vec2;
 use chaos_engine::ChaosBackend;
-use std::sync::{Arc, Mutex};
-use chaos_engine::rendering::effect::Effect;
+use chaos_engine::commands::manager::ChaosCmdManager;
+use chaos_engine::ecs::EntityID;
+use chaos_engine::ecs::manager::ChaosComponentManager;
+use chaos_engine::ecs::system::ChaosSystem;
 use chaos_engine::rendering::buffer::{Buffer, BufferData};
-use crate::commands::{QuadVertex, AsteroidRenderCommand, QUAD, AsteroidPerObjectData};
+use chaos_engine::rendering::effect::Effect;
 use core::mem;
+use rand::Rng;
 use std::collections::hash_map;
 use std::ops::Deref;
-use crate::components::{CollisionComponent, PhysicsComponent, AsteroidRenderComponent, VoxelData};
-use crate::math::Vec2;
-use chaos_engine::ecs::EntityID;
 use std::sync::mpsc::Receiver;
-use rand::Rng;
+use std::sync::{Arc, Mutex};
 
 extern crate array_tool;
-
 
 ///
 /// Collision system that handles collision between two collidables
@@ -28,23 +27,29 @@ extern crate array_tool;
 /// CollisionOccurred(collisionPoint)
 ///
 
-pub struct CollisionSystem{
-}
+pub struct CollisionSystem {}
 
-impl CollisionSystem{
+#[derive(Clone)]
+impl CollisionSystem {
     pub fn new() -> CollisionSystem {
-        return CollisionSystem{
-        }
+        return CollisionSystem {};
     }
 }
 
 impl ChaosSystem for CollisionSystem {
-    fn initialize(&mut self, _component_manager: &mut ChaosComponentManager, _cmd_manager: &mut ChaosCmdManager<ChaosBackend>) {
-
+    fn initialize(
+        &mut self,
+        _component_manager: &mut ChaosComponentManager,
+        _cmd_manager: &mut ChaosCmdManager<ChaosBackend>,
+    ) {
     }
 
-    fn update(&mut self, _delta_time: f32, component_manager: &mut ChaosComponentManager, _cmd_manager: &mut ChaosCmdManager<ChaosBackend>) -> Result<(), &'static str>{
-
+    fn update(
+        &mut self,
+        _delta_time: f32,
+        component_manager: &mut ChaosComponentManager,
+        _cmd_manager: &mut ChaosCmdManager<ChaosBackend>,
+    ) -> Result<(), &'static str> {
         // get all physics components
         // let collision_components = component_manager.get_all_entities_with_component::<CollisionComponent>();
         //
@@ -95,25 +100,33 @@ impl ChaosSystem for CollisionSystem {
     }
 }
 
-
 pub struct PhysicsSystem {
     // gravity: f32
 }
 
-impl PhysicsSystem{
+#[derive(Clone)]
+impl PhysicsSystem {
     pub fn new() -> Self {
         return PhysicsSystem{
             // gravity: 0.0
-        }
+        };
     }
 }
 
 impl ChaosSystem for PhysicsSystem {
-    fn initialize(&mut self, _component_manager: &mut ChaosComponentManager, _cmd_manager: &mut ChaosCmdManager<ChaosBackend>) {
-
+    fn initialize(
+        &mut self,
+        _component_manager: &mut ChaosComponentManager,
+        _cmd_manager: &mut ChaosCmdManager<ChaosBackend>,
+    ) {
     }
 
-    fn update(&mut self, delta_time: f32, component_manager: &mut ChaosComponentManager, _cmd_manager: &mut ChaosCmdManager<ChaosBackend>) -> Result<(), &'static str>{
+    fn update(
+        &mut self,
+        delta_time: f32,
+        component_manager: &mut ChaosComponentManager,
+        _cmd_manager: &mut ChaosCmdManager<ChaosBackend>,
+    ) -> Result<(), &'static str> {
         // let entities = component_manager.get_all_entities_with_component::<PhysicsComponent>();
         //
         // for entity_id in entities {
@@ -126,37 +139,50 @@ impl ChaosSystem for PhysicsSystem {
     }
 }
 
-
 ///
 /// Asteroid render system
 /// Renders all asteroids in the game at once
 
+#[derive(Clone)]
 pub struct AsteroidRenderSystem {
-    renderables: Vec<(EntityID, Arc<Mutex<Effect<ChaosBackend, AsteroidPerObjectData>>>, Arc<Mutex<Buffer<ChaosBackend, QuadVertex>>>)>,
+    renderables: Vec<(
+        EntityID,
+        Arc<Mutex<Effect<ChaosBackend, AsteroidPerObjectData>>>,
+        Arc<Mutex<Buffer<ChaosBackend, QuadVertex>>>,
+    )>,
     asteroid_renderable_component_added: Option<Receiver<EntityID>>,
-    asteroid_renderable_component_removed: Option<Receiver<EntityID>>
+    asteroid_renderable_component_removed: Option<Receiver<EntityID>>,
 }
 
 impl AsteroidRenderSystem {
-    pub fn new()-> AsteroidRenderSystem  {
-        AsteroidRenderSystem{
+    pub fn new() -> AsteroidRenderSystem {
+        AsteroidRenderSystem {
             renderables: Vec::new(),
             asteroid_renderable_component_added: None,
-            asteroid_renderable_component_removed: None
+            asteroid_renderable_component_removed: None,
         }
     }
 
     fn make_asteroid(&mut self, entity_id: EntityID) {
         let stride = mem::size_of::<QuadVertex>();
 
-        let effect = Effect::<ChaosBackend, AsteroidPerObjectData>::new_vs_ps("line.vert".to_string(), "line.frag".to_string(), stride , QuadVertex::layout());
+        let effect = Effect::<ChaosBackend, AsteroidPerObjectData>::new_vs_ps(
+            "line.vert".to_string(),
+            "line.frag".to_string(),
+            stride,
+            QuadVertex::layout(),
+        );
         let buffer = Buffer::<ChaosBackend, QuadVertex>::new(Vec::from(QUAD));
 
-        self.renderables.push((entity_id, Arc::new( Mutex::new(effect)), Arc::new(Mutex::new(buffer))));
+        self.renderables.push((
+            entity_id,
+            Arc::new(Mutex::new(effect)),
+            Arc::new(Mutex::new(buffer)),
+        ));
     }
 
     fn remove_asteroid(&mut self, entity_id: EntityID) {
-        self.renderables.retain(| (e_id, _, __) | *e_id == entity_id);
+        self.renderables.retain(|(e_id, _, __)| *e_id == entity_id);
     }
 }
 
@@ -170,24 +196,47 @@ impl AsteroidRenderSystem {
 /// Subscribed to:
 /// AsteroidRenderComponent - ComponentAdded/ComponentRemoved (
 impl ChaosSystem for AsteroidRenderSystem {
-    fn initialize(&mut self, component_manager: &mut ChaosComponentManager, _cmd_manager: &mut ChaosCmdManager<ChaosBackend>) {
-        self.asteroid_renderable_component_added = Some(component_manager.subscribe_to_add::<AsteroidRenderComponent>());
-        self.asteroid_renderable_component_removed = Some(component_manager.subscribe_to_remove::<AsteroidRenderComponent>());
+    fn initialize(
+        &mut self,
+        component_manager: &mut ChaosComponentManager,
+        _cmd_manager: &mut ChaosCmdManager<ChaosBackend>,
+    ) {
+        self.asteroid_renderable_component_added =
+            Some(component_manager.subscribe_to_add::<AsteroidRenderComponent>());
+        self.asteroid_renderable_component_removed =
+            Some(component_manager.subscribe_to_remove::<AsteroidRenderComponent>());
     }
 
-    fn update(&mut self, _delta_time: f32, component_manager: &mut ChaosComponentManager, cmd_manager: &mut ChaosCmdManager<ChaosBackend>) -> Result<(), &'static str>{
+    fn update(
+        &mut self,
+        _delta_time: f32,
+        component_manager: &mut ChaosComponentManager,
+        cmd_manager: &mut ChaosCmdManager<ChaosBackend>,
+    ) -> Result<(), &'static str> {
         // find newly added asteroids or removed asteroids
-        for entity_id in self.asteroid_renderable_component_removed.as_mut().unwrap().try_recv() {
+        for entity_id in self
+            .asteroid_renderable_component_removed
+            .as_mut()
+            .unwrap()
+            .try_recv()
+        {
             self.remove_asteroid(entity_id);
         }
 
-        for entity_id in self.asteroid_renderable_component_added.as_mut().unwrap().try_recv() {
+        for entity_id in self
+            .asteroid_renderable_component_added
+            .as_mut()
+            .unwrap()
+            .try_recv()
+        {
             self.make_asteroid(entity_id);
         }
 
         for (entity, effect, buffer) in &self.renderables {
             let physics_component = component_manager.get_component::<PhysicsComponent>(*entity);
-            let asteroid_component = component_manager.get_component::<AsteroidRenderComponent>(*entity).unwrap();
+            let asteroid_component = component_manager
+                .get_component::<AsteroidRenderComponent>(*entity)
+                .unwrap();
             let mut constant = AsteroidPerObjectData::new();
 
             if let Ok(pc) = physics_component {
@@ -199,33 +248,42 @@ impl ChaosSystem for AsteroidRenderSystem {
 
             cmd_manager.add_render_command(Box::new(AsteroidRenderCommand::new(
                 effect.clone(),
-                asteroid_component.get_vertex_buffer())));
+                asteroid_component.get_vertex_buffer(),
+            )));
         }
         Ok(())
     }
 }
 
+#[derive(Clone)]
 pub struct AsteroidGenerator {
     sec_since_generation: f32,
-    interval_in_sec: f32
+    interval_in_sec: f32,
 }
 
 impl AsteroidGenerator {
     pub fn new(interval_in_sec: f32) -> Self {
-        return AsteroidGenerator{
+        return AsteroidGenerator {
             sec_since_generation: 0.0,
-            interval_in_sec
-        }
+            interval_in_sec,
+        };
     }
 }
 
 impl ChaosSystem for AsteroidGenerator {
-    fn initialize(&mut self, _component_manager: &mut ChaosComponentManager, _cmd_manager: &mut ChaosCmdManager<ChaosBackend>) {
-
+    fn initialize(
+        &mut self,
+        _component_manager: &mut ChaosComponentManager,
+        _cmd_manager: &mut ChaosCmdManager<ChaosBackend>,
+    ) {
     }
 
-
-    fn update(&mut self, delta_time: f32, component_manager: &mut ChaosComponentManager, _cmd_manager: &mut ChaosCmdManager<ChaosBackend>) -> Result<(), &'static str> {
+    fn update(
+        &mut self,
+        delta_time: f32,
+        component_manager: &mut ChaosComponentManager,
+        _cmd_manager: &mut ChaosCmdManager<ChaosBackend>,
+    ) -> Result<(), &'static str> {
         self.sec_since_generation += delta_time;
         if self.sec_since_generation >= self.interval_in_sec {
             self.sec_since_generation = self.sec_since_generation % self.interval_in_sec;
@@ -234,11 +292,22 @@ impl ChaosSystem for AsteroidGenerator {
             let mut rng = rand::thread_rng();
 
             // make the physics component
-            if component_manager.add_component(new_entity, PhysicsComponent::new(
-                Vec2{x: rng.gen_range(-1.0..1.0), y: rng.gen_range(-1.0..1.0)},
-                Vec2{x: rng.gen_range(-0.25..0.25), y:rng.gen_range(-0.25..0.25)},
-                rng.gen_range(0.1..1.0))
-            ).is_err()
+            if component_manager
+                .add_component(
+                    new_entity,
+                    PhysicsComponent::new(
+                        Vec2 {
+                            x: rng.gen_range(-1.0..1.0),
+                            y: rng.gen_range(-1.0..1.0),
+                        },
+                        Vec2 {
+                            x: rng.gen_range(-0.25..0.25),
+                            y: rng.gen_range(-0.25..0.25),
+                        },
+                        rng.gen_range(0.1..1.0),
+                    ),
+                )
+                .is_err()
             {
                 return Err("Error updating AsteroidGenerator");
             }
@@ -247,18 +316,29 @@ impl ChaosSystem for AsteroidGenerator {
             let width = rng.gen_range(10..30) as usize;
             let height = rng.gen_range(10..30) as usize;
 
-            if component_manager.add_component(new_entity,
-                                            AsteroidRenderComponent::new(VoxelData::generate_random_asteroid(width, height))).is_err() {
+            if component_manager
+                .add_component(
+                    new_entity,
+                    AsteroidRenderComponent::new(VoxelData::generate_random_asteroid(
+                        width, height,
+                    )),
+                )
+                .is_err()
+            {
                 return Err("Error updating Asteroid Generator");
             }
 
             // make the collision component
-            if component_manager.add_component(new_entity,
-            CollisionComponent::new((width as f32).max(height as f32))).is_err() {
+            if component_manager
+                .add_component(
+                    new_entity,
+                    CollisionComponent::new((width as f32).max(height as f32)),
+                )
+                .is_err()
+            {
                 return Err("Error creating collision component");
             }
         }
         Ok(())
     }
 }
-
