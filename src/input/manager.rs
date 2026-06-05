@@ -15,17 +15,30 @@ pub struct ChaosDeviceEventSystem {
     ready_registrations: Vec<ChaosDeviceEventRegistration>,
 }
 
+#[derive(Debug)]
 pub enum ChaosDeviceEventRegistrationError {
     EventAlreadyRegistered(ChaosDeviceEvent),
 }
 
 const MULTI_PRESS_TIME_IN_MS: u128 = 300;
 
+impl Default for ChaosDeviceEventSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChaosDeviceEventSystem {
     pub fn new() -> ChaosDeviceEventSystem {
+        let mut registered_events = HashMap::new();
+        registered_events.insert(
+            ChaosDeviceEvent::CloseRequested,
+            (ChaosDeviceEventRegistration::CloseRequested, None),
+        );
+
         ChaosDeviceEventSystem {
             registered_commands: HashMap::new(),
-            registered_events: HashMap::new(),
+            registered_events,
             ready_registrations: Vec::new(),
         }
     }
@@ -53,7 +66,7 @@ impl ChaosDeviceEventSystem {
                 Some(ChaosDeviceEventState::new_single(input_key)),
             ),
         );
-        return Ok(());
+        Ok(())
     }
 
     pub fn register_multi_key_press<T: Any>(
@@ -79,7 +92,7 @@ impl ChaosDeviceEventSystem {
                 Some(ChaosDeviceEventState::new_multi(input_key, repeats)),
             ),
         );
-        return Ok(());
+        Ok(())
     }
 
     pub fn register_command<T: Any>(
@@ -97,13 +110,13 @@ impl ChaosDeviceEventSystem {
         self.registered_commands
             .insert(event_registration, TypeId::of::<T>());
         self.registered_events
-            .insert(event, (event_registration.clone(), None));
+            .insert(event, (event_registration, None));
 
-        return Ok(());
+        Ok(())
     }
 
     pub fn get_ready_registrations(&self) -> Vec<ChaosDeviceEventRegistration> {
-        return self.ready_registrations.clone();
+        self.ready_registrations.clone()
     }
 
     pub fn clear_ready_registrations(&mut self) {
@@ -112,51 +125,46 @@ impl ChaosDeviceEventSystem {
 
     pub fn get_commands(&self) -> Vec<TypeId> {
         let mut commands: Vec<TypeId> = Vec::new();
-        for event in self.ready_registrations.clone() {
-            self.registered_commands
-                .get(&event)
-                .map(|cmd| commands.push(*cmd));
+        for event in self.ready_registrations.iter() {
+            if let Some(cmd) = self.registered_commands.get(event) {
+                commands.push(*cmd);
+            }
         }
-        return commands;
+        commands
     }
 
     pub fn update_commands(&mut self, event: &WindowEvent) {
         let chaos_event = ChaosDeviceDetailedEvent::from(event);
         let lookup = ChaosDeviceEvent::from(chaos_event.clone());
         // get a lookup key that doesn't contain details about key presses or new window size
-        match self.registered_events.get_mut(&lookup) {
-            Some((registration, state)) => {
-                match state {
-                    Some(button_state) => {
-                        // If this is a button specific event, handle that here
-                        button_state.update(&chaos_event, MULTI_PRESS_TIME_IN_MS);
+        if let Some((registration, state)) = self.registered_events.get_mut(&lookup) {
+            match state {
+                Some(button_state) => {
+                    // If this is a button specific event, handle that here
+                    button_state.update(&chaos_event, MULTI_PRESS_TIME_IN_MS);
 
-                        // We can do this because of the partial eq impl for ChaosDeviceEventRegistration
-                        if button_state == registration {
-                            self.ready_registrations.push(registration.clone());
-                        }
-                    }
-                    None => {
-                        // Maybe this was a non button related event
-                        // like close window, resize etc
-                        self.ready_registrations.push(registration.clone());
+                    // We can do this because of the partial eq impl for ChaosDeviceEventRegistration
+                    if button_state == registration {
+                        self.ready_registrations.push(*registration);
                     }
                 }
+                None => {
+                    // Maybe this was a non button related event
+                    // like close window, resize etc
+                    self.ready_registrations.push(*registration);
+                }
             }
-            None => (),
-        };
+        }
     }
 
     fn is_registered_event(&self, chaos_device_event: &ChaosDeviceEvent) -> bool {
-        return self.registered_events.contains_key(chaos_device_event);
+        self.registered_events.contains_key(chaos_device_event)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::input::manager::WindowEvent::KeyboardInput;
 
     struct TestCmd {}
 
@@ -173,7 +181,9 @@ mod tests {
             !event_manager.is_registered_event(&ChaosDeviceEvent::KeyPress(ChaosKeyCode::Escape))
         );
 
-        event_manager.register_single_key_press::<TestCmd>(ChaosKeyCode::Escape);
+        event_manager
+            .register_single_key_press::<TestCmd>(ChaosKeyCode::Escape)
+            .unwrap();
         assert!(
             event_manager.is_registered_event(&ChaosDeviceEvent::KeyPress(ChaosKeyCode::Escape))
         );
@@ -186,7 +196,9 @@ mod tests {
             !event_manager.is_registered_event(&ChaosDeviceEvent::KeyPress(ChaosKeyCode::Escape))
         );
 
-        event_manager.register_multi_key_press::<TestCmd>(ChaosKeyCode::Escape, 2);
+        event_manager
+            .register_multi_key_press::<TestCmd>(ChaosKeyCode::Escape, 2)
+            .unwrap();
         assert!(
             event_manager.is_registered_event(&ChaosDeviceEvent::KeyPress(ChaosKeyCode::Escape))
         );
@@ -197,7 +209,9 @@ mod tests {
         let mut event_manager = ChaosDeviceEventSystem::new();
         assert!(!event_manager.is_registered_event(&ChaosDeviceEvent::Focused));
 
-        event_manager.register_command::<TestCmd>(ChaosDeviceEventRegistration::Focused);
+        event_manager
+            .register_command::<TestCmd>(ChaosDeviceEventRegistration::Focused)
+            .unwrap();
         assert!(event_manager.is_registered_event(&ChaosDeviceEvent::Focused));
     }
     /*

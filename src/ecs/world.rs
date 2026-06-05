@@ -17,6 +17,12 @@ pub struct ChaosWorld {
     communicator: Arc<Mutex<ChaosCommunicator>>,
 }
 
+impl Default for ChaosWorld {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChaosWorld {
     pub fn new() -> ChaosWorld {
         let communicator = Arc::new(Mutex::new(ChaosCommunicator::new()));
@@ -43,9 +49,9 @@ impl ChaosWorld {
             std::sync::PoisonError<std::sync::MutexGuard<'_, ChaosCommunicator>>,
         > = self.communicator.lock();
         match guard {
-            Ok(ref mut comm) => return comm.register_for(event),
+            Ok(ref mut comm) => comm.register_for(event),
             Err(_) => panic!("Failed to acquire communicator lock"),
-        };
+        }
     }
 
     pub fn add_system<T: ChaosSystem>(&mut self, system: T) {

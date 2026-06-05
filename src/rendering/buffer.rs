@@ -63,17 +63,17 @@ where
         usage: ChaosBufferUsage,
         memory_type_filter: ChaosBufferMemoryType,
     ) -> ChaosBuffer<T> {
-        return ChaosBuffer::<T> {
+        ChaosBuffer::<T> {
             name,
             buffer: None,
             usage,
             memory_type_filter,
             data,
-        };
+        }
     }
 
     pub fn initialize(&mut self, allocator: Arc<StandardMemoryAllocator>) -> Result<(), String> {
-        let v: Vec<T> = self.data.drain(..).into_iter().collect();
+        let v: Vec<T> = self.data.drain(..).collect();
         let buffer = Buffer::from_iter(
             allocator,
             BufferCreateInfo {
@@ -97,9 +97,9 @@ where
     }
 }
 
-impl Into<BufferUsage> for ChaosBufferUsage {
-    fn into(self) -> BufferUsage {
-        match self {
+impl From<ChaosBufferUsage> for BufferUsage {
+    fn from(value: ChaosBufferUsage) -> BufferUsage {
+        match value {
             ChaosBufferUsage::TransferSrc => BufferUsage::TRANSFER_SRC,
             ChaosBufferUsage::TransferDst => BufferUsage::TRANSFER_DST,
             ChaosBufferUsage::UniformTexelBuffer => BufferUsage::UNIFORM_TEXEL_BUFFER,
@@ -124,9 +124,9 @@ impl Into<BufferUsage> for ChaosBufferUsage {
     }
 }
 
-impl Into<MemoryTypeFilter> for ChaosBufferMemoryType {
-    fn into(self) -> MemoryTypeFilter {
-        match self {
+impl From<ChaosBufferMemoryType> for MemoryTypeFilter {
+    fn from(value: ChaosBufferMemoryType) -> MemoryTypeFilter {
+        match value {
             ChaosBufferMemoryType::PreferDevice => MemoryTypeFilter::PREFER_DEVICE,
             ChaosBufferMemoryType::PreferHost => MemoryTypeFilter::PREFER_HOST,
             ChaosBufferMemoryType::HostSequentialWrite => MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,

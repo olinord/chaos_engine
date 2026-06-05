@@ -23,11 +23,13 @@ pub struct ChaosComponentManager {
     communicator: Arc<Mutex<ChaosCommunicator>>,
 }
 
-impl ChaosComponentManager {
-    pub fn default() -> ChaosComponentManager {
-        return ChaosComponentManager::new(5, 5, Arc::new(Mutex::new(ChaosCommunicator::new())));
+impl Default for ChaosComponentManager {
+    fn default() -> Self {
+        ChaosComponentManager::new(5, 5, Arc::new(Mutex::new(ChaosCommunicator::new())))
     }
+}
 
+impl ChaosComponentManager {
     pub fn new(
         initial_entity_capacity: usize,
         initial_component_capacity: usize,
@@ -46,17 +48,17 @@ impl ChaosComponentManager {
     pub fn subscribe_to_add<T: Component>(&mut self) -> ChaosReceiver {
         let mut guard = self.communicator.lock();
         match guard {
-            Ok(ref mut comm) => return comm.register_for(format!("add_{}", type_name::<T>())),
+            Ok(ref mut comm) => comm.register_for(format!("add_{}", type_name::<T>())),
             Err(_) => panic!("Failed to acquire communicator lock"),
-        };
+        }
     }
 
     pub fn subscribe_to_remove<T: Component>(&mut self) -> ChaosReceiver {
         let mut guard = self.communicator.lock();
         match guard {
-            Ok(ref mut comm) => return comm.register_for(format!("remove_{}", type_name::<T>())),
+            Ok(ref mut comm) => comm.register_for(format!("remove_{}", type_name::<T>())),
             Err(_) => panic!("Failed to acquire communicator lock"),
-        };
+        }
     }
     /// Creates an entity that can be used within the System
     ///
@@ -107,12 +109,15 @@ impl ChaosComponentManager {
                 let id = self.current_index_id;
                 self.current_index_id += 1;
 
-                e.insert(component.type_id(), id);
+                if let Some(previous_lookup_id) = e.insert(component.type_id(), id) {
+                    self.components.remove(&previous_lookup_id);
+                }
 
                 self.component_index
                     .entry(TypeId::of::<T>())
-                    .or_insert(HashMap::new())
-                    .insert(entity_id, id);
+                    .or_default()
+                    .insert(entity_id, id)
+                    .map(|previous_lookup_id| self.components.remove(&previous_lookup_id));
                 self.components.insert(id, Box::new(component));
 
                 let mut guard = self.communicator.lock();
@@ -134,11 +139,11 @@ impl ChaosComponentManager {
     }
 
     fn lookup_component<T: Component>(&self, lookup_id: &LookupID) -> Result<&T, ComponentErrors> {
-        match self.components.get(&lookup_id) {
+        match self.components.get(lookup_id) {
             Some(component) => Ok(component
                 .downcast_ref::<T>()
                 .ok_or(ComponentErrors::ComponentCastError(TypeId::of::<T>()))?),
-            None => Err(ComponentErrors::ComponentLookupNotFound(lookup_id.clone())),
+            None => Err(ComponentErrors::ComponentLookupNotFound(*lookup_id)),
         }
     }
 
@@ -146,11 +151,11 @@ impl ChaosComponentManager {
         &mut self,
         lookup_id: &LookupID,
     ) -> Result<&mut T, ComponentErrors> {
-        match self.components.get_mut(&lookup_id) {
+        match self.components.get_mut(lookup_id) {
             Some(component) => Ok(component
                 .downcast_mut::<T>()
                 .ok_or(ComponentErrors::ComponentCastError(TypeId::of::<T>()))?),
-            None => Err(ComponentErrors::ComponentLookupNotFound(lookup_id.clone())),
+            None => Err(ComponentErrors::ComponentLookupNotFound(*lookup_id)),
         }
     }
 
@@ -216,7 +221,7 @@ impl ChaosComponentManager {
                 for (_, lookup_id) in components.iter() {
                     match self.lookup_component::<T>(lookup_id) {
                         Ok(c) => {
-                            result.push(&c);
+                            result.push(c);
                         }
                         Err(e) => {
                             return Err(e);
@@ -250,7 +255,7 @@ impl ChaosComponentManager {
     ///
     /// ```
     pub fn get_component<T: Component>(&self, entity_id: u64) -> Result<&T, ComponentErrors> {
-        return self.lookup_component::<T>(self.get_lookup_id::<T>(entity_id)?);
+        self.lookup_component::<T>(self.get_lookup_id::<T>(entity_id)?)
     }
 
     /// Gets a component of a type for an entity, returning a clone of the entity
@@ -277,7 +282,8 @@ impl ChaosComponentManager {
         &mut self,
         entity_id: u64,
     ) -> Result<&mut T, ComponentErrors> {
-        return self.lookup_component_mut::<T>(&self.get_lookup_id::<T>(entity_id)?.clone());
+        let lookup_id = *self.get_lookup_id::<T>(entity_id)?;
+        self.lookup_component_mut::<T>(&lookup_id)
     }
 
     /// Removes a component from an entity
@@ -286,17 +292,17 @@ impl ChaosComponentManager {
         entity_id: EntityID,
     ) -> Result<(), ComponentErrors> {
         let type_id = TypeId::of::<T>();
-        let lookup_id = self
+        let lookup_id = *self
             .entity_index
             .get_mut(&entity_id)
-            .ok_or(ComponentErrors::EntityNotFound(entity_id))
-            .unwrap()
+            .ok_or(ComponentErrors::EntityNotFound(entity_id))?
             .get_mut(&type_id)
-            .ok_or(ComponentErrors::ComponentNotFound(type_id))
-            .unwrap();
+            .ok_or(ComponentErrors::ComponentNotFound(type_id))?;
 
         // remove from the component lookup table
-        self.components.remove(lookup_id);
+        self.components
+            .remove(&lookup_id)
+            .ok_or(ComponentErrors::ComponentLookupNotFound(lookup_id))?;
 
         let component_type = TypeId::of::<T>();
 
@@ -325,7 +331,7 @@ impl ChaosComponentManager {
             }
             Err(_) => panic!("Failed to acquire communicator lock"),
         };
-        return Ok(());
+        Ok(())
     }
 
     /// Removes an entity
@@ -526,5 +532,23 @@ mod tests {
         let component = cm.get_component::<Position>(entity_id).unwrap();
         assert_eq!(component.x, 3.0);
         assert_eq!(component.y, 4.0);
+        assert_eq!(cm.components.len(), 1);
+    }
+
+    #[test]
+    fn removing_missing_component_returns_err() {
+        #[derive(Clone, PartialEq, Debug)]
+        struct Position {
+            x: f32,
+            y: f32,
+        }
+
+        let mut cm = ChaosComponentManager::default();
+        let entity_id = cm.create_entity();
+
+        assert_eq!(
+            cm.remove_component::<Position>(entity_id),
+            Err(ComponentErrors::ComponentNotFound(TypeId::of::<Position>()))
+        );
     }
 }

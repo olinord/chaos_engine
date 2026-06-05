@@ -100,7 +100,9 @@ impl ApplicationHandler for ChaosEngine {
             WindowEvent::RedrawRequested => {
                 self.window.as_ref().unwrap().request_redraw();
                 let rendering_system = self.rendering_system.as_mut().unwrap();
-                let mut buffer_builder = rendering_system.start_frame();
+                let Some(mut buffer_builder) = rendering_system.start_frame() else {
+                    return;
+                };
                 let renderables = self
                     .world
                     .component_manager

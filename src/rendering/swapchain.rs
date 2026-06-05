@@ -3,17 +3,19 @@ use std::sync::Arc;
 use vulkano::{
     Validated, VulkanError,
     device::{Device, physical::PhysicalDevice},
-    image::{Image, ImageUsage, view::ImageView},
-    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
+    image::{Image, ImageUsage},
+    render_pass::RenderPass,
     swapchain::{Surface, Swapchain, SwapchainCreateInfo},
 };
+
+pub type SwapchainAndImages = (Arc<Swapchain>, Vec<Arc<Image>>);
 
 pub fn get_swapchain_and_backbuffers(
     physical_device: Arc<PhysicalDevice>,
     device: Arc<Device>,
     surface: Arc<Surface>,
     dimensions: [u32; 2],
-) -> Result<(Arc<Swapchain>, Vec<Arc<Image>>), Validated<VulkanError>> {
+) -> Result<SwapchainAndImages, Validated<VulkanError>> {
     let caps = physical_device
         .surface_capabilities(&surface, Default::default())
         .expect("failed to get surface capabilities");

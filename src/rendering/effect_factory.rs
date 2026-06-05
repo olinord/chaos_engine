@@ -25,8 +25,8 @@ enum ShaderType {
 
 #[derive(Debug, Clone)]
 struct ChaosShaderModule {
-    module: Arc<ShaderModule>,
-    shader_path: PathBuf,
+    _module: Arc<ShaderModule>,
+    _shader_path: PathBuf,
     entry_point: EntryPoint,
 }
 
@@ -63,7 +63,7 @@ impl ShaderEntry {
     }
 
     fn initialize(&mut self, device: &Arc<Device>) {
-        for (_, shader_module) in &self.shaders {
+        for shader_module in self.shaders.values() {
             let entry_point = shader_module.entry_point.clone();
             self.stages
                 .push(PipelineShaderStageCreateInfo::new(entry_point));
@@ -116,9 +116,7 @@ impl ShaderCache {
 
         let mut shaders: HashMap<PathBuf, ShaderEntry> = HashMap::new();
 
-        let path_to_exec = std::env::current_exe().unwrap();
-        let path_to_exec_folder = path_to_exec.parent().unwrap();
-        Self::walk_dir(path_to_exec_folder, root, &mut shaders, device)
+        Self::walk_dir(root, &mut shaders, device)
             .map_err(|e| format!("Failed to walk shader directory: {}", e))?;
 
         let mut cache = self
@@ -127,7 +125,7 @@ impl ShaderCache {
             .map_err(|e| format!("Failed to acquire write lock: {}", e))?;
 
         for (_, entry) in &mut shaders.iter_mut() {
-            entry.initialize(&device);
+            entry.initialize(device);
         }
         cache.extend(shaders);
 
@@ -135,7 +133,6 @@ impl ShaderCache {
     }
 
     fn walk_dir(
-        executable_path: &Path,
         current_dir: &Path,
         shaders: &mut HashMap<PathBuf, ShaderEntry>,
         device: &Arc<Device>,
@@ -159,7 +156,7 @@ impl ShaderCache {
             let path = entry.path();
 
             if path.is_dir() {
-                Self::walk_dir(executable_path, &path, shaders, device)?;
+                Self::walk_dir(&path, shaders, device)?;
             } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 let name = path
                     .file_stem()
@@ -173,7 +170,7 @@ impl ShaderCache {
 
                 let entry = shaders
                     .entry(path.clone())
-                    .or_insert_with(|| ShaderEntry::new());
+                    .or_insert_with(ShaderEntry::new);
 
                 let bytes = match std::fs::read(&path) {
                     Ok(b) => b,
@@ -213,17 +210,17 @@ impl ShaderCache {
                     "vert" | "vs" => entry.shaders.insert(
                         ShaderType::Vertex,
                         ChaosShaderModule {
-                            module,
-                            shader_path: path.clone(),
-                            entry_point: entry_point,
+                            _module: module,
+                            _shader_path: path.clone(),
+                            entry_point,
                         },
                     ),
                     "frag" | "ps" => entry.shaders.insert(
                         ShaderType::Fragment,
                         ChaosShaderModule {
-                            module,
-                            shader_path: path.clone(),
-                            entry_point: entry_point,
+                            _module: module,
+                            _shader_path: path.clone(),
+                            entry_point,
                         },
                     ),
                     _ => None,
@@ -282,7 +279,7 @@ impl ShaderCache {
             })?
             .entry_point;
 
-        let vertex_input_state = T::per_vertex().definition(&vertex_entry_point);
+        let vertex_input_state = T::per_vertex().definition(vertex_entry_point);
 
         if let Err(e) = vertex_input_state {
             return Err(ChaosEffectBuildError::VulkanError {

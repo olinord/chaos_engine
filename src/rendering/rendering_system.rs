@@ -5,13 +5,16 @@ use vulkano::{
     Validated, ValidationError, VulkanError, VulkanLibrary,
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferExecFuture, CommandBufferUsage,
-        PrimaryAutoCommandBuffer, RenderPassBeginInfo, RenderingAttachmentInfo, RenderingInfo,
-        SubpassBeginInfo, SubpassContents, allocator::StandardCommandBufferAllocator,
+        PrimaryAutoCommandBuffer, RenderingAttachmentInfo, RenderingInfo,
+        allocator::StandardCommandBufferAllocator,
     },
     device::{Device, DeviceCreateInfo, Queue, QueueCreateInfo, physical::PhysicalDevice},
+    format::ClearValue,
+    image::view::ImageView,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::{FreeListAllocator, GenericMemoryAllocator, StandardMemoryAllocator},
     pipeline::graphics::viewport::Viewport,
+    render_pass::{AttachmentLoadOp, AttachmentStoreOp},
     swapchain::{
         self, PresentFuture, Surface, Swapchain, SwapchainAcquireFuture, SwapchainPresentInfo,
     },
@@ -39,14 +42,16 @@ pub struct ChaosRenderSystem {
     current_frame: u128,
     current_buffer: u32,
     swapchain: Arc<Swapchain>,
-    fences: Vec<Option<Arc<Fence>>>,
+    image_views: Vec<Arc<ImageView>>,
+    current_acquire_future: Option<SwapchainAcquireFuture>,
+    fences: Vec<Option<Fence>>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     add_render_component: ChaosReceiver,
     viewport: Viewport,
 }
 
-trait ChaosRenderableTrait {
+pub trait ChaosRenderableTrait {
     fn add_to_command_buffer(
         &self,
         command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
@@ -56,12 +61,27 @@ trait ChaosRenderableTrait {
         &self,
         device: Arc<Device>,
         memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-        vieport: &Viewport,
+        viewport: &Viewport,
     ) -> Result<(), &'static str>;
 }
 
 pub struct ChaosRenderableContainer {
     renderable: Arc<dyn ChaosRenderableTrait>,
+}
+
+impl ChaosRenderableContainer {
+    pub fn new<T>(renderable: T) -> Self
+    where
+        T: ChaosRenderableTrait + 'static,
+    {
+        Self {
+            renderable: Arc::new(renderable),
+        }
+    }
+
+    pub fn from_arc(renderable: Arc<dyn ChaosRenderableTrait>) -> Self {
+        Self { renderable }
+    }
 }
 
 impl ChaosRenderSystem {
@@ -140,6 +160,10 @@ impl ChaosRenderSystem {
                 panic!("failed to create swapchain: {e:?}")
             }
         };
+        let image_views = backbuffers
+            .into_iter()
+            .map(|image| ImageView::new_default(image).expect("failed to create swapchain image view"))
+            .collect();
 
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
             device.clone(),
@@ -147,7 +171,7 @@ impl ChaosRenderSystem {
         ));
         StandardCommandBufferAllocator::new(device.clone(), Default::default());
 
-        let fences: Vec<Option<Arc<Fence>>> = vec![None; 3];
+        let fences: Vec<Option<Fence>> = (0..3).map(|_| None).collect();
 
         ChaosRenderSystem {
             physical_device: Some(physical_device),
@@ -156,6 +180,8 @@ impl ChaosRenderSystem {
             current_frame: 0,
             current_buffer: 0,
             swapchain,
+            image_views,
+            current_acquire_future: None,
             fences,
             command_buffer_allocator,
             memory_allocator,
@@ -164,7 +190,29 @@ impl ChaosRenderSystem {
         }
     }
 
-    pub fn start_frame(&mut self) -> AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> {
+    pub fn start_frame(&mut self) -> Option<AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>> {
+        let (image_i, suboptimal, acquire_future) =
+            match swapchain::acquire_next_image(self.swapchain.clone(), None)
+                .map_err(Validated::unwrap)
+            {
+                Ok(r) => r,
+                Err(VulkanError::OutOfDate) => {
+                    return None;
+                }
+                Err(e) => panic!("failed to acquire next image: {e}"),
+            };
+
+        if suboptimal {
+            println!("Swapchain is suboptimal");
+        }
+
+        if let Some(image_fence) = &self.fences[image_i as usize] {
+            image_fence.wait(None).unwrap();
+        }
+
+        self.current_buffer = image_i;
+        self.current_acquire_future = Some(acquire_future);
+
         let queue = self.queue.as_ref().unwrap();
         let mut current_builder = AutoCommandBufferBuilder::primary(
             self.command_buffer_allocator.clone(),
@@ -173,15 +221,22 @@ impl ChaosRenderSystem {
         )
         .unwrap();
 
+        let mut color_attachment =
+            RenderingAttachmentInfo::image_view(self.image_views[image_i as usize].clone());
+        color_attachment.load_op = AttachmentLoadOp::Clear;
+        color_attachment.store_op = AttachmentStoreOp::Store;
+        color_attachment.clear_value = Some(ClearValue::Float([0.0, 0.0, 0.0, 1.0]));
+
         let rendering_info = RenderingInfo {
             render_area_extent: [
                 self.viewport.extent[0] as u32,
                 self.viewport.extent[1] as u32,
             ],
+            color_attachments: vec![Some(color_attachment)],
             ..Default::default()
         };
         current_builder.begin_rendering(rendering_info).unwrap();
-        return current_builder;
+        Some(current_builder)
     }
 
     pub fn render(
@@ -204,30 +259,15 @@ impl ChaosRenderSystem {
         buffer_builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     ) {
         let mut buffer_builder = buffer_builder;
-        buffer_builder.end_render_pass(Default::default()).unwrap();
+        buffer_builder.end_rendering().unwrap();
         let command_buffer = buffer_builder.build().unwrap();
+        let image_i = self.current_buffer;
+        let acquire_future = self
+            .current_acquire_future
+            .take()
+            .expect("end_frame called before start_frame acquired a swapchain image");
 
-        let (image_i, suboptimal, acquire_future) =
-            match swapchain::acquire_next_image(self.swapchain.clone(), None)
-                .map_err(Validated::unwrap)
-            {
-                Ok(r) => r,
-                Err(VulkanError::OutOfDate) => {
-                    return;
-                }
-                Err(e) => panic!("failed to acquire next image: {e}"),
-            };
-
-        if suboptimal {
-            println!("Swapchain is suboptimal");
-        }
-
-        // wait for the fence related to this image to finish (normally this would be the oldest fence)
-        if let Some(image_fence) = &self.fences[image_i as usize] {
-            image_fence.wait(None).unwrap();
-        }
-
-        let previous_future = match self.fences[self.current_frame as usize].clone() {
+        let previous_future = match self.fences[image_i as usize].take() {
             // Create a NowFuture
             None => {
                 let mut now = sync::now(self.device.clone().unwrap());
@@ -250,7 +290,7 @@ impl ChaosRenderSystem {
             .then_signal_fence_and_flush();
 
         self.fences[image_i as usize] = match future.map_err(Validated::unwrap) {
-            Ok(value) => Some(Arc::new(value)),
+            Ok(value) => Some(value),
             Err(VulkanError::OutOfDate) => None,
             Err(e) => {
                 println!("failed to flush future: {e}");
@@ -258,6 +298,7 @@ impl ChaosRenderSystem {
             }
         };
         self.current_buffer = image_i;
+        self.current_frame = self.current_frame.wrapping_add(1);
     }
 
     pub fn update(&mut self, world: &mut ChaosWorld) {

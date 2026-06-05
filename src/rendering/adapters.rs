@@ -65,5 +65,5 @@ pub fn select_physical_device(
         physical_device.properties().device_type,
     );
 
-    return (physical_device, queue_family_index);
+    (physical_device, queue_family_index)
 }
