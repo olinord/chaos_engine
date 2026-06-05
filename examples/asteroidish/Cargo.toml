@@ -7,7 +7,6 @@ build="build.rs"
 
 [build-dependencies]
 shaderc = "0.10.1"
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies.chaos_engine]
 path="../../"
@@ -15,3 +14,4 @@ path="../../"
 [dependencies]
 array_tool = "1.0.0"
 rand = "0.9.2"
+vulkano = {version = "0.35.2", default-features = true}

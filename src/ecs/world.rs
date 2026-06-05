@@ -4,12 +4,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use chaos_communicator::communicator::ChaosCommunicator;
+use chaos_communicator::{
+    communicator::{ChaosCommunicator, ChaosReceiver},
+    message::ChaosMessage,
+};
 
 use crate::ecs::{component::ChaosComponentManager, system::ChaosSystem};
 
 pub struct ChaosWorld {
-    component_manager: ChaosComponentManager,
+    pub component_manager: ChaosComponentManager,
     systems: HashMap<TypeId, Box<dyn ChaosSystem>>,
     communicator: Arc<Mutex<ChaosCommunicator>>,
 }
@@ -24,7 +27,7 @@ impl ChaosWorld {
         }
     }
 
-    pub fn send_message(&mut self, message: chaos_communicator::message::ChaosMessage) {
+    pub fn send_message(&mut self, message: ChaosMessage) {
         let mut guard = self.communicator.lock();
         match guard {
             Ok(ref mut comm) => {
@@ -34,11 +37,11 @@ impl ChaosWorld {
         };
     }
 
-    pub fn register_for<T: std::hash::Hash>(
-        &mut self,
-        event: T,
-    ) -> chaos_communicator::communicator::ChaosReceiver {
-        let mut guard = self.communicator.lock();
+    pub fn register_for<T: std::hash::Hash>(&mut self, event: T) -> ChaosReceiver {
+        let mut guard: Result<
+            std::sync::MutexGuard<'_, ChaosCommunicator>,
+            std::sync::PoisonError<std::sync::MutexGuard<'_, ChaosCommunicator>>,
+        > = self.communicator.lock();
         match guard {
             Ok(ref mut comm) => return comm.register_for(event),
             Err(_) => panic!("Failed to acquire communicator lock"),
@@ -48,6 +51,13 @@ impl ChaosWorld {
     pub fn add_system<T: ChaosSystem>(&mut self, system: T) {
         log::info!("Adding system: {}", type_name::<T>());
         self.systems.insert(TypeId::of::<T>(), Box::new(system));
+
+        // get first mutable reference to the system we just added
+        let system = self.systems.get_mut(&TypeId::of::<T>()).unwrap().as_mut();
+        match system.initialize(&mut self.component_manager) {
+            Ok(_) => (),
+            Err(e) => panic!("Failed to initialize system: {}", e),
+        };
     }
 
     pub fn update(&mut self, delta_time: f32) -> Result<(), &'static str> {

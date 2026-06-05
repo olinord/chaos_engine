@@ -4,8 +4,9 @@ use std::{
 };
 
 use crate::{
-    ecs::world::ChaosWorld, input::manager::ChaosDeviceEventSystem,
-    rendering::rendering_system::ChaosRenderSystem,
+    ecs::world::ChaosWorld,
+    input::manager::ChaosDeviceEventSystem,
+    rendering::rendering_system::{ChaosRenderSystem, ChaosRenderableContainer},
 };
 
 use winit::{
@@ -16,11 +17,12 @@ use winit::{
     raw_window_handle::HasDisplayHandle,
     window::{WindowAttributes, WindowId},
 };
+
 pub struct ChaosEngine {
     world: ChaosWorld,
     input_manager: ChaosDeviceEventSystem,
     window: Option<Arc<winit::window::Window>>,
-    rendering_system: Option<ChaosRenderSystem>,
+    pub rendering_system: Option<ChaosRenderSystem>,
     title: String,
     width: u32,
     height: u32,
@@ -50,6 +52,10 @@ impl ChaosEngine {
             .run_app(&mut self)
             .expect("Failed to run event loop");
     }
+
+    pub fn get_world_mut(&mut self) -> &mut ChaosWorld {
+        &mut self.world
+    }
 }
 
 impl ApplicationHandler for ChaosEngine {
@@ -63,9 +69,15 @@ impl ApplicationHandler for ChaosEngine {
             event_loop.create_window(window_attributes).unwrap(),
         ));
 
+        let add_subscription = self
+            .world
+            .component_manager
+            .subscribe_to_add::<ChaosRenderableContainer>();
+
         let rendering_system = ChaosRenderSystem::new(
             &event_loop.display_handle().unwrap(),
             self.window.clone().unwrap(),
+            add_subscription,
         );
         self.rendering_system = Some(rendering_system);
     }
@@ -73,20 +85,29 @@ impl ApplicationHandler for ChaosEngine {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let start = Instant::now();
         self.input_manager.update_commands(&event);
-
+        println!("window Event: {:?}", event);
         // update the systems
         self.world.update(self.frame_time.as_secs_f32()).unwrap();
-
+        self.rendering_system
+            .as_mut()
+            .unwrap()
+            .update(&mut self.world);
         match event {
             WindowEvent::CloseRequested => {
                 println!("The close button was pressed; stopping");
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                if let Some(rendering_system) = &mut self.rendering_system {
-                    rendering_system.render();
-                }
                 self.window.as_ref().unwrap().request_redraw();
+                let rendering_system = self.rendering_system.as_mut().unwrap();
+                let mut buffer_builder = rendering_system.start_frame();
+                let renderables = self
+                    .world
+                    .component_manager
+                    .get_all_components_of_type::<ChaosRenderableContainer>()
+                    .unwrap();
+                rendering_system.render(renderables, &mut buffer_builder);
+                rendering_system.end_frame(buffer_builder);
             }
             _ => (),
         }

@@ -14,6 +14,29 @@ pub fn select_physical_device(
     surface: &Arc<Surface>,
     device_extensions: &DeviceExtensions,
 ) -> (Arc<PhysicalDevice>, u32) {
+    println!("Selecting physical device...");
+    println!("extensions required: {:?}", device_extensions);
+    // print out the devices and their properties
+    for device in instance
+        .enumerate_physical_devices()
+        .expect("failed to enumerate physical devices")
+    {
+        let properties = device.properties();
+        println!(
+            "Device: {} (type: {:?}, api version: {}, driver version: {}, vendor ID: {}, device ID: {})",
+            properties.device_name,
+            properties.device_type,
+            properties.api_version,
+            properties.driver_version,
+            properties.vendor_id,
+            properties.device_id,
+        );
+        println!(
+            "  Supported extensions: {:?}",
+            device.supported_extensions()
+        );
+    }
+
     let (physical_device, queue_family_index) = instance
         .enumerate_physical_devices()
         .expect("failed to enumerate physical devices")

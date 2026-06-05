@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
+use chaos_communicator::communicator::ChaosReceiver;
 use vulkano::{
-    Validated, VulkanError, VulkanLibrary,
-    buffer::BufferContents,
+    Validated, ValidationError, VulkanError, VulkanLibrary,
     command_buffer::{
-        CommandBufferExecFuture, PrimaryAutoCommandBuffer,
-        allocator::StandardCommandBufferAllocator,
+        AutoCommandBufferBuilder, CommandBufferExecFuture, CommandBufferUsage,
+        PrimaryAutoCommandBuffer, RenderPassBeginInfo, RenderingAttachmentInfo, RenderingInfo,
+        SubpassBeginInfo, SubpassContents, allocator::StandardCommandBufferAllocator,
     },
     device::{Device, DeviceCreateInfo, Queue, QueueCreateInfo, physical::PhysicalDevice},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
-    memory::allocator::StandardMemoryAllocator,
-    pipeline::graphics::{vertex_input::Vertex, viewport::Viewport},
-    render_pass::Framebuffer,
+    memory::allocator::{FreeListAllocator, GenericMemoryAllocator, StandardMemoryAllocator},
+    pipeline::graphics::viewport::Viewport,
     swapchain::{
         self, PresentFuture, Surface, Swapchain, SwapchainAcquireFuture, SwapchainPresentInfo,
     },
@@ -22,42 +22,54 @@ use vulkano::{
 };
 use winit::{raw_window_handle::DisplayHandle, window::Window};
 
-use crate::rendering::{
-    adapters::select_physical_device,
-    buffer::{CEBufferBuilder, CEBufferMemoryType, CEBufferUsage},
-    command_buffers::get_command_buffers,
-    effect::{CEEffectBuilder, CEEffectType},
-    swapchain::{get_framebuffers, get_render_pass, get_swapchain_and_backbuffers},
+use crate::{
+    ecs::world::ChaosWorld,
+    rendering::{adapters::select_physical_device, swapchain::get_swapchain_and_backbuffers},
 };
+
 pub type Fence = FenceSignalFuture<
     PresentFuture<CommandBufferExecFuture<JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture>>>,
 >;
 
 #[allow(unused)]
-#[derive(Clone)]
 pub struct ChaosRenderSystem {
     physical_device: Option<Arc<PhysicalDevice>>,
     device: Option<Arc<Device>>,
     queue: Option<Arc<Queue>>,
     current_frame: u128,
     current_buffer: u32,
-    framebuffers: Vec<Arc<Framebuffer>>,
-    command_buffers: Vec<Arc<PrimaryAutoCommandBuffer>>,
     swapchain: Arc<Swapchain>,
     fences: Vec<Option<Arc<Fence>>>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    add_render_component: ChaosReceiver,
+    viewport: Viewport,
 }
 
-#[derive(BufferContents, Vertex)]
-#[repr(C)]
-struct MyVertex {
-    #[format(R32G32_SFLOAT)]
-    position: [f32; 2],
-    #[format(R32G32B32A32_SFLOAT)]
-    color: [f32; 4],
+trait ChaosRenderableTrait {
+    fn add_to_command_buffer(
+        &self,
+        command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    ) -> Result<(), Box<ValidationError>>;
+
+    fn initialize(
+        &self,
+        device: Arc<Device>,
+        memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+        vieport: &Viewport,
+    ) -> Result<(), &'static str>;
+}
+
+pub struct ChaosRenderableContainer {
+    renderable: Arc<dyn ChaosRenderableTrait>,
 }
 
 impl ChaosRenderSystem {
-    pub fn new(display_handle: &DisplayHandle, window: Arc<Window>) -> ChaosRenderSystem {
+    pub fn new(
+        display_handle: &DisplayHandle,
+        window: Arc<Window>,
+        add_render_component: ChaosReceiver,
+    ) -> ChaosRenderSystem {
         let library = VulkanLibrary::new().expect("no local Vulkan library/DLL");
 
         let required_extensions = match Surface::required_extensions(display_handle) {
@@ -84,6 +96,7 @@ impl ChaosRenderSystem {
 
         let device_extensions = vulkano::device::DeviceExtensions {
             khr_swapchain: true,
+            khr_dynamic_rendering: true,
             ..vulkano::device::DeviceExtensions::empty()
         };
         let (physical_device, queue_family_index) =
@@ -110,38 +123,12 @@ impl ChaosRenderSystem {
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
-        println!("Creating vertex buffer");
-        let buffer = match CEBufferBuilder::new("vertex_buffer".into())
-            .with_allocator(memory_allocator)
-            .with_usage(CEBufferUsage::VertexBuffer)
-            .with_memory_type(CEBufferMemoryType::PreferDevice)
-            .with_memory_type(CEBufferMemoryType::HostSequentialWrite)
-            .build(vec![
-                MyVertex {
-                    position: [-0.5, -0.5],
-                    color: [1.0, 0.0, 0.0, 1.0],
-                },
-                MyVertex {
-                    position: [0.0, 0.5],
-                    color: [0.0, 1.0, 0.0, 1.0],
-                },
-                MyVertex {
-                    position: [0.5, -0.25],
-                    color: [0.0, 0.0, 1.0, 1.0],
-                },
-            ]) {
-            Ok(b) => b,
-            Err(e) => panic!("failed to create vertex buffer: {e:?}"),
-        };
-        println!("Vertex buffer created successfully");
         let inner_size = window.inner_size();
-        println!("Window size: {}x{}", inner_size.width, inner_size.height);
         let viewport = Viewport {
             offset: [0.0, 0.0],
             extent: [inner_size.width as f32, inner_size.height as f32],
             depth_range: 0.0..=1.0,
         };
-
         let (swapchain, backbuffers) = match get_swapchain_and_backbuffers(
             physical_device.clone(),
             device.clone(),
@@ -154,32 +141,13 @@ impl ChaosRenderSystem {
             }
         };
 
-        let render_pass = get_render_pass(device.clone(), &swapchain);
-        let framebuffers = get_framebuffers(&backbuffers, &render_pass);
+        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
+        StandardCommandBufferAllocator::new(device.clone(), Default::default());
 
-        let command_buffer_allocator =
-            StandardCommandBufferAllocator::new(device.clone(), Default::default());
-
-        let effect = match CEEffectBuilder::new(CEEffectType::Rendering)
-            .with_device(device.clone())
-            .with_vertex_shader("line.vert".into(), "main".into())
-            .with_pixel_shader("line.frag".into(), "main".into())
-            .with_viewport(Arc::new(viewport))
-            .with_render_pass(render_pass)
-            .build::<MyVertex>()
-        {
-            Ok(e) => e,
-            Err(e) => panic!("failed to create effect: {e:?}"),
-        };
-
-        let command_buffers = get_command_buffers(
-            Arc::new(command_buffer_allocator),
-            &queue,
-            &effect.pipeline,
-            &framebuffers,
-            &buffer.buffer,
-        );
-        let fences: Vec<Option<Arc<Fence>>> = vec![None; command_buffers.len()];
+        let fences: Vec<Option<Arc<Fence>>> = vec![None; 3];
 
         ChaosRenderSystem {
             physical_device: Some(physical_device),
@@ -187,14 +155,58 @@ impl ChaosRenderSystem {
             queue: Some(queue),
             current_frame: 0,
             current_buffer: 0,
-            framebuffers,
-            command_buffers,
             swapchain,
             fences,
+            command_buffer_allocator,
+            memory_allocator,
+            add_render_component,
+            viewport,
         }
     }
 
-    pub fn render(&mut self) {
+    pub fn start_frame(&mut self) -> AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> {
+        let queue = self.queue.as_ref().unwrap();
+        let mut current_builder = AutoCommandBufferBuilder::primary(
+            self.command_buffer_allocator.clone(),
+            queue.queue_family_index(),
+            CommandBufferUsage::MultipleSubmit,
+        )
+        .unwrap();
+
+        let rendering_info = RenderingInfo {
+            render_area_extent: [
+                self.viewport.extent[0] as u32,
+                self.viewport.extent[1] as u32,
+            ],
+            ..Default::default()
+        };
+        current_builder.begin_rendering(rendering_info).unwrap();
+        return current_builder;
+    }
+
+    pub fn render(
+        &self,
+        container: Vec<&ChaosRenderableContainer>,
+        buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    ) {
+        for renderable in container {
+            match renderable.renderable.add_to_command_buffer(buffer_builder) {
+                Ok(()) => {}
+                Err(e) => {
+                    println!("Failed to add to command buffer: {e}");
+                }
+            }
+        }
+    }
+
+    pub fn end_frame(
+        &mut self,
+        buffer_builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    ) {
+        let mut buffer_builder = buffer_builder;
+        buffer_builder.end_render_pass(Default::default()).unwrap();
+        let command_buffer = buffer_builder.build().unwrap();
+
         let (image_i, suboptimal, acquire_future) =
             match swapchain::acquire_next_image(self.swapchain.clone(), None)
                 .map_err(Validated::unwrap)
@@ -229,10 +241,7 @@ impl ChaosRenderSystem {
 
         let future = previous_future
             .join(acquire_future)
-            .then_execute(
-                self.queue.clone().unwrap(),
-                self.command_buffers[image_i as usize].clone(),
-            )
+            .then_execute(self.queue.clone().unwrap(), command_buffer)
             .unwrap()
             .then_swapchain_present(
                 self.queue.clone().unwrap(),
@@ -249,6 +258,39 @@ impl ChaosRenderSystem {
             }
         };
         self.current_buffer = image_i;
+    }
+
+    pub fn update(&mut self, world: &mut ChaosWorld) {
+        // iterate over the added and removed components
+        // gather all entity ids from the add_render_component receiver
+        let mut added_entities: Vec<&ChaosRenderableContainer> = vec![];
+        loop {
+            let message = self.add_render_component.receive();
+            if message.is_none() {
+                break;
+            }
+            let message = message.unwrap();
+            let entity_id = message.get("entity_id").unwrap();
+            added_entities.push(
+                world
+                    .component_manager
+                    .get_component::<ChaosRenderableContainer>(entity_id)
+                    .unwrap(),
+            );
+        }
+
+        for entity in added_entities {
+            match entity.renderable.initialize(
+                self.device.clone().unwrap(),
+                self.memory_allocator.clone(),
+                &self.viewport,
+            ) {
+                Ok(()) => {}
+                Err(e) => {
+                    println!("Failed to initialize renderable: {e}");
+                }
+            }
+        }
     }
 
     // pub fn create_command_buffer<T: BufferContents>(
