@@ -10,7 +10,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     // println!("cargo:rerun-if-changed=res/shaders");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-
     // locate executable path even if the project is in workspace
 
     let executable_path = locate_target_dir_from_output_dir(&out_dir)
@@ -71,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 // Determine the output path based on the input name
                 let out_path = format!(
-                    "{}{}.spv",
+                    "{}{}",
                     &shaders_path_string,
                     in_path.file_name().unwrap().to_string_lossy()
                 );

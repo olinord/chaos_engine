@@ -8,7 +8,9 @@ use vulkano::{
         PrimaryAutoCommandBuffer, RenderingAttachmentInfo, RenderingInfo,
         allocator::StandardCommandBufferAllocator,
     },
-    device::{Device, DeviceCreateInfo, Queue, QueueCreateInfo, physical::PhysicalDevice},
+    device::{
+        Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo, physical::PhysicalDevice,
+    },
     format::ClearValue,
     image::view::ImageView,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
@@ -131,6 +133,10 @@ impl ChaosRenderSystem {
                     ..Default::default()
                 }],
                 enabled_extensions: device_extensions,
+                enabled_features: DeviceFeatures {
+                    dynamic_rendering: true,
+                    ..DeviceFeatures::empty()
+                },
                 ..Default::default()
             },
         ) {

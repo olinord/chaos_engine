@@ -158,19 +158,35 @@ impl ShaderCache {
             if path.is_dir() {
                 Self::walk_dir(&path, shaders, device)?;
             } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
+                let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                let shader_ext = if ext == "spv" {
+                    Path::new(file_stem)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or(ext)
+                } else {
+                    ext
+                };
+                let shader_type = match shader_ext {
+                    "vert" | "vs" => ShaderType::Vertex,
+                    "frag" | "ps" => ShaderType::Fragment,
+                    _ => continue,
+                };
+                let shader_name = if ext == "spv" {
+                    Path::new(file_stem)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(file_stem)
+                } else {
+                    file_stem
+                };
 
-                if name.is_empty() {
+                if shader_name.is_empty() {
                     continue;
                 }
 
-                let entry = shaders
-                    .entry(path.clone())
-                    .or_insert_with(ShaderEntry::new);
+                let shader_key = path.with_file_name(shader_name);
+                let entry = shaders.entry(shader_key).or_insert_with(ShaderEntry::new);
 
                 let bytes = match std::fs::read(&path) {
                     Ok(b) => b,
@@ -206,25 +222,14 @@ impl ShaderCache {
                         shader_path: path.display().to_string(),
                     }
                 })?;
-                match ext {
-                    "vert" | "vs" => entry.shaders.insert(
-                        ShaderType::Vertex,
-                        ChaosShaderModule {
-                            _module: module,
-                            _shader_path: path.clone(),
-                            entry_point,
-                        },
-                    ),
-                    "frag" | "ps" => entry.shaders.insert(
-                        ShaderType::Fragment,
-                        ChaosShaderModule {
-                            _module: module,
-                            _shader_path: path.clone(),
-                            entry_point,
-                        },
-                    ),
-                    _ => None,
-                };
+                entry.shaders.insert(
+                    shader_type,
+                    ChaosShaderModule {
+                        _module: module,
+                        _shader_path: path.clone(),
+                        entry_point,
+                    },
+                );
             }
         }
 

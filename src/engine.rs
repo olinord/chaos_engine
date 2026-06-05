@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    ecs::world::ChaosWorld,
+    ecs::{errors::ComponentErrors, world::ChaosWorld},
     input::manager::ChaosDeviceEventSystem,
     rendering::rendering_system::{ChaosRenderSystem, ChaosRenderableContainer},
 };
@@ -106,8 +106,12 @@ impl ApplicationHandler for ChaosEngine {
                 let renderables = self
                     .world
                     .component_manager
-                    .get_all_components_of_type::<ChaosRenderableContainer>()
-                    .unwrap();
+                    .get_all_components_of_type::<ChaosRenderableContainer>();
+                let renderables = match renderables {
+                    Ok(renderables) => renderables,
+                    Err(ComponentErrors::ComponentNotFound(_)) => Vec::new(),
+                    Err(err) => panic!("failed to get renderable components: {err:?}"),
+                };
                 rendering_system.render(renderables, &mut buffer_builder);
                 rendering_system.end_frame(buffer_builder);
             }
