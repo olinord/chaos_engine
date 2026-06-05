@@ -162,7 +162,9 @@ impl ChaosRenderSystem {
         };
         let image_views = backbuffers
             .into_iter()
-            .map(|image| ImageView::new_default(image).expect("failed to create swapchain image view"))
+            .map(|image| {
+                ImageView::new_default(image).expect("failed to create swapchain image view")
+            })
             .collect();
 
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
