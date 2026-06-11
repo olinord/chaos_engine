@@ -10,4 +10,4 @@ vulkano-macros = "0.35.0"
 winit = "0.30.12"
 log = "0.4.11"
 spirv-reflect = "0.2.3"
-chaos_communicator={ git="https://github.com/olinord/chaos_communicator", rev="7f72ffe"}
+chaos_communicator={ git="https://github.com/olinord/chaos_communicator", rev="90e1e96"}
