@@ -1,5 +1,9 @@
 {
     "chat.tools.terminal.autoApprove": {
         "cargo check": true
-    }
+    },
+    "rust-analyzer.linkedProjects": [
+        "Cargo.toml",
+        "examples/asteroidish/Cargo.toml"
+    ]
 }

@@ -1,0 +1,41 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug asteroidish",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--manifest-path",
+                    "examples/asteroidish/Cargo.toml"
+                ],
+                "filter": {
+                    "name": "asteroidish",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}/examples/asteroidish"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug chaos_engine tests",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib"
+                ],
+                "filter": {
+                    "name": "chaos_engine",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
