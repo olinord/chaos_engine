@@ -46,6 +46,10 @@ impl ChaosEngine {
         })
     }
 
+    pub fn get_input_manager(&mut self) -> &mut ChaosDeviceEventSystem {
+        &mut self.input_manager
+    }
+
     pub fn run(mut self) {
         let event_loop = EventLoop::new().expect("Couldn't create an eventloop");
         event_loop
@@ -85,7 +89,6 @@ impl ApplicationHandler for ChaosEngine {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let start = Instant::now();
         self.input_manager.update_commands(&event);
-        println!("window Event: {:?}", event);
         // update the systems
         self.world.update(self.frame_time.as_secs_f32()).unwrap();
         self.rendering_system
@@ -94,7 +97,6 @@ impl ApplicationHandler for ChaosEngine {
             .update(&mut self.world);
         match event {
             WindowEvent::CloseRequested => {
-                println!("The close button was pressed; stopping");
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {

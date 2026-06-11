@@ -15,7 +15,6 @@ pub fn select_physical_device(
     device_extensions: &DeviceExtensions,
 ) -> (Arc<PhysicalDevice>, u32) {
     println!("Selecting physical device...");
-    println!("extensions required: {:?}", device_extensions);
     // print out the devices and their properties
     for device in instance
         .enumerate_physical_devices()
@@ -30,10 +29,6 @@ pub fn select_physical_device(
             properties.driver_version,
             properties.vendor_id,
             properties.device_id,
-        );
-        println!(
-            "  Supported extensions: {:?}",
-            device.supported_extensions()
         );
     }
 

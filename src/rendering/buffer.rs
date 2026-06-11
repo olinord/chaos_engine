@@ -127,8 +127,12 @@ impl From<ChaosBufferUsage> for BufferUsage {
 impl From<ChaosBufferMemoryType> for MemoryTypeFilter {
     fn from(value: ChaosBufferMemoryType) -> MemoryTypeFilter {
         match value {
-            ChaosBufferMemoryType::PreferDevice => MemoryTypeFilter::PREFER_DEVICE,
-            ChaosBufferMemoryType::PreferHost => MemoryTypeFilter::PREFER_HOST,
+            ChaosBufferMemoryType::PreferDevice => {
+                MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE
+            }
+            ChaosBufferMemoryType::PreferHost => {
+                MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE
+            }
             ChaosBufferMemoryType::HostSequentialWrite => MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ChaosBufferMemoryType::HostRandomAccess => MemoryTypeFilter::HOST_RANDOM_ACCESS,
         }

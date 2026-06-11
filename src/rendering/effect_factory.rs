@@ -5,11 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use vulkano::device::Device;
+use vulkano::format::Format;
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
+use vulkano::pipeline::graphics::subpass::{PipelineRenderingCreateInfo, PipelineSubpassType};
 use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
 use vulkano::pipeline::graphics::viewport::ViewportState;
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
@@ -45,6 +47,7 @@ pub struct EffectUsage {
     pub path: PathBuf,
     pub viewport: vulkano::pipeline::graphics::viewport::Viewport,
     pub color_attachment_count: u32,
+    pub color_attachment_format: Format,
 }
 
 struct ShaderEntry {
@@ -83,22 +86,22 @@ impl ShaderEntry {
     }
 }
 
-pub struct ShaderCache {
+pub struct EffectFactory {
     shaders: RwLock<HashMap<PathBuf, ShaderEntry>>,
 }
 
-static INSTANCE: OnceLock<ShaderCache> = OnceLock::new();
+static INSTANCE: OnceLock<EffectFactory> = OnceLock::new();
 
-impl ShaderCache {
+impl EffectFactory {
     fn new() -> Self {
-        ShaderCache {
+        EffectFactory {
             shaders: RwLock::new(HashMap::new()),
         }
     }
 
     /// Get the global singleton instance
-    pub fn instance() -> &'static ShaderCache {
-        INSTANCE.get_or_init(ShaderCache::new)
+    pub fn instance() -> &'static EffectFactory {
+        INSTANCE.get_or_init(EffectFactory::new)
     }
 
     /// Load all shaders from the given root path.
@@ -288,7 +291,7 @@ impl ShaderCache {
 
         if let Err(e) = vertex_input_state {
             return Err(ChaosEffectBuildError::VulkanError {
-                vulkan_error: e.to_string(),
+                vulkan_error: format!("{:?}", e),
             });
         }
         let vertex_input_state = vertex_input_state.unwrap();
@@ -310,6 +313,14 @@ impl ShaderCache {
                 // Ignore these for now.
                 rasterization_state: Some(RasterizationState::default()),
                 multisample_state: Some(MultisampleState::default()),
+                subpass: Some(PipelineSubpassType::BeginRendering(
+                    PipelineRenderingCreateInfo {
+                        color_attachment_formats: (0..usage.color_attachment_count)
+                            .map(|_| Some(usage.color_attachment_format))
+                            .collect(),
+                        ..Default::default()
+                    },
+                )),
                 color_blend_state: Some(ColorBlendState::with_attachment_states(
                     usage.color_attachment_count,
                     ColorBlendAttachmentState::default(),
@@ -321,7 +332,7 @@ impl ShaderCache {
         match result {
             Ok(pipeline) => Ok(pipeline),
             Err(vulkan_error) => Err(ChaosEffectBuildError::VulkanError {
-                vulkan_error: vulkan_error.to_string(),
+                vulkan_error: format!("{:?}", vulkan_error),
             }),
         }
     }
@@ -347,7 +358,12 @@ impl Display for ChaosEffectBuildError {
                 write!(f, "Missing entry point in shader at path {}", shader_path)
             }
             ChaosEffectBuildError::VulkanError { vulkan_error } => {
-                write!(f, "Vulkan error: {}", vulkan_error)
+                // write the vulkan error into a string and format it sensibly
+                write!(f, "Vulkan error: ")?;
+                vulkan_error.split('\n').for_each(|line| {
+                    write!(f, "\t{}", line).unwrap();
+                });
+                Ok(())
             }
         }
     }

@@ -11,7 +11,7 @@ use vulkano::{
     device::{
         Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo, physical::PhysicalDevice,
     },
-    format::ClearValue,
+    format::{ClearValue, Format},
     image::view::ImageView,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::{FreeListAllocator, GenericMemoryAllocator, StandardMemoryAllocator},
@@ -64,6 +64,7 @@ pub trait ChaosRenderableTrait {
         device: Arc<Device>,
         memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
         viewport: &Viewport,
+        color_attachment_format: Format,
     ) -> Result<(), &'static str>;
 }
 
@@ -333,10 +334,11 @@ impl ChaosRenderSystem {
                 self.device.clone().unwrap(),
                 self.memory_allocator.clone(),
                 &self.viewport,
+                self.swapchain.image_format(),
             ) {
                 Ok(()) => {}
                 Err(e) => {
-                    println!("Failed to initialize renderable: {e}");
+                    println!("Failed to initialize renderable: {}", e);
                 }
             }
         }
