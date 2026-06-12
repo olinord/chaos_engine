@@ -181,8 +181,6 @@ fn main() {
     engine
         .get_world_mut()
         .add_system(TriangleSpawnSystem::new());
-    let mut input_manager = engine.get_input_manager();
-    input_manager.register_multi_key_press::<ExitCmd>(KeyCode::Escape, 3);
 
     // let effect_builder = engine.create_effect_builder(CEEffectType::Rendering);
     // effect_builder.with_vertex_shader("line.vert".into(), "main".into());
