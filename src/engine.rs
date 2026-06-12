@@ -73,10 +73,7 @@ impl ApplicationHandler for ChaosEngine {
             event_loop.create_window(window_attributes).unwrap(),
         ));
 
-        let add_subscription = self
-            .world
-            .component_manager
-            .subscribe_to_add::<ChaosRenderableContainer>();
+        let add_subscription = self.world.subscribe_to_add::<ChaosRenderableContainer>();
 
         let rendering_system = ChaosRenderSystem::new(
             &event_loop.display_handle().unwrap(),
@@ -107,7 +104,6 @@ impl ApplicationHandler for ChaosEngine {
                 };
                 let renderables = self
                     .world
-                    .component_manager
                     .get_all_components_of_type::<ChaosRenderableContainer>();
                 let renderables = match renderables {
                     Ok(renderables) => renderables,

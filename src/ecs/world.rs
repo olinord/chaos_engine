@@ -9,10 +9,16 @@ use chaos_communicator::{
     message::ChaosMessage,
 };
 
-use crate::ecs::{component::ChaosComponentManager, system::ChaosSystem};
+use crate::ecs::{
+    EntityID,
+    component::{ChaosComponentManager, Component},
+    entity::EntityBuilder,
+    errors::ComponentErrors,
+    system::ChaosSystem,
+};
 
 pub struct ChaosWorld {
-    pub component_manager: ChaosComponentManager,
+    component_manager: ChaosComponentManager,
     systems: HashMap<TypeId, Box<dyn ChaosSystem>>,
     communicator: Arc<Mutex<ChaosCommunicator>>,
 }
@@ -71,5 +77,48 @@ impl ChaosWorld {
             system.update(delta_time, &mut self.component_manager)?;
         }
         Ok(())
+    }
+
+    // creation methods
+    pub fn spawn(&mut self) -> EntityBuilder<'_> {
+        EntityBuilder::new(self.component_manager.create_entity(), self)
+    }
+
+    pub fn despawn(&mut self, entity: EntityID) -> Result<(), ComponentErrors> {
+        self.component_manager.remove_entity(entity)
+    }
+
+    pub fn add_component<T: Component>(
+        &mut self,
+        entity_id: EntityID,
+        component: T,
+    ) -> Result<(), ComponentErrors> {
+        self.component_manager.add_component(entity_id, component)
+    }
+
+    pub fn remove_component<T: Component>(
+        &mut self,
+        entity_id: EntityID,
+    ) -> Result<(), ComponentErrors> {
+        self.component_manager.remove_component::<T>(entity_id)
+    }
+
+    pub fn get_component<T: Component>(&self, entity_id: EntityID) -> Result<&T, ComponentErrors> {
+        self.component_manager.get_component::<T>(entity_id)
+    }
+
+    pub fn get_component_mut<T: Component>(
+        &mut self,
+        entity_id: EntityID,
+    ) -> Result<&mut T, ComponentErrors> {
+        self.component_manager.get_component_mut::<T>(entity_id)
+    }
+
+    pub fn get_all_components_of_type<T: Component>(&self) -> Result<Vec<&T>, ComponentErrors> {
+        self.component_manager.get_all_components_of_type::<T>()
+    }
+
+    pub fn subscribe_to_add<T: Component>(&mut self) -> ChaosReceiver {
+        self.component_manager.subscribe_to_add::<T>()
     }
 }

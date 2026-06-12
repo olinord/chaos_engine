@@ -323,7 +323,6 @@ impl ChaosRenderSystem {
             let entity_id = message.get("entity_id").unwrap();
             added_entities.push(
                 world
-                    .component_manager
                     .get_component::<ChaosRenderableContainer>(entity_id)
                     .unwrap(),
             );
