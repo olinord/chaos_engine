@@ -73,13 +73,38 @@ impl From<&ChaosDeviceDetailedEvent> for ChaosDeviceEvent {
 
 impl PartialEq for ChaosDeviceEvent {
     fn eq(&self, other: &ChaosDeviceEvent) -> bool {
-        std::mem::discriminant(self) == std::mem::discriminant(other)
+        match *self {
+            Self::CloseRequested => {
+                return *other == Self::CloseRequested;
+            }
+            Self::Focused => {
+                return *other == Self::Focused;
+            }
+            Self::Unfocused => {
+                return *other == Self::Unfocused;
+            }
+            Self::KeyPress(press) => match *other {
+                Self::KeyPress(other_press) => {
+                    return press == other_press;
+                }
+                _ => {
+                    return false;
+                }
+            },
+            Self::Unrecognized => {
+                return *other == Self::Unrecognized;
+            }
+        }
     }
 }
 
 impl Hash for ChaosDeviceEvent {
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
+
+        if let Self::KeyPress(key) = self {
+            key.hash(state);
+        }
     }
 }
 
@@ -96,9 +121,7 @@ impl From<&WindowEvent> for ChaosDeviceDetailedEvent {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => match event.physical_key {
-                PhysicalKey::Unidentified(_) => {
-                    ChaosDeviceDetailedEvent::Unrecognized
-                }
+                PhysicalKey::Unidentified(_) => ChaosDeviceDetailedEvent::Unrecognized,
                 PhysicalKey::Code(key) => {
                     ChaosDeviceDetailedEvent::KeyPress(key, event.state.is_pressed())
                 }
