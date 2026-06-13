@@ -1,4 +1,4 @@
-use crate::ecs::{EntityID, component::Component, errors::ComponentErrors, world::ChaosWorld};
+use crate::ecs::{EntityID, component::Component, world::ChaosWorld};
 
 pub struct EntityBuilder<'world> {
     world: &'world mut ChaosWorld,
