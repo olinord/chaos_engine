@@ -64,7 +64,7 @@ impl ChaosComponentManager {
     ///
     /// # Examples
     /// ```
-    /// use chaos_engine::ecs::manager::ChaosComponentManager;
+    /// use chaos_engine::ecs::component::ChaosComponentManager;
     /// let mut cm = ChaosComponentManager::default();
     /// let entity_id = cm.create_entity();
     /// assert_eq!(0, entity_id);
@@ -86,7 +86,7 @@ impl ChaosComponentManager {
     ///
     /// # Examples
     /// ```
-    /// use chaos_engine::ecs::manager::ChaosComponentManager;
+    /// use chaos_engine::ecs::component::ChaosComponentManager;
     ///
     /// #[derive(Clone, PartialEq, Debug)]
     /// struct Position {
@@ -176,7 +176,7 @@ impl ChaosComponentManager {
     ///
     /// # Examples
     /// ```
-    /// use chaos_engine::ecs::manager::ChaosComponentManager;
+    /// use chaos_engine::ecs::component::ChaosComponentManager;
     ///
     /// #[derive(Clone, PartialEq, Debug)]
     /// struct Position {
@@ -238,7 +238,7 @@ impl ChaosComponentManager {
     ///
     /// # Examples
     /// ```
-    /// use chaos_engine::ecs::manager::ChaosComponentManager;
+    /// use chaos_engine::ecs::component::ChaosComponentManager;
     ///
     /// #[derive(Clone, PartialEq, Debug)]
     /// struct Position {
@@ -262,7 +262,7 @@ impl ChaosComponentManager {
     ///
     /// # Examples
     /// ```
-    /// use chaos_engine::ecs::manager::ChaosComponentManager;
+    /// use chaos_engine::ecs::component::ChaosComponentManager;
     ///
     /// #[derive(Clone, PartialEq, Debug)]
     /// struct Position {

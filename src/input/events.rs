@@ -8,7 +8,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 pub type ChaosKeyCode = KeyCode;
 
 // Event to use in registration
-#[derive(Hash, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, Hash, PartialEq, Eq, Copy, Clone)]
 pub enum ChaosDeviceEventRegistration {
     CloseRequested,
     Focused,
@@ -38,7 +38,7 @@ pub enum ChaosDeviceDetailedEvent {
 }
 
 // key state storage (to store how often we have pressed etc)
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ChaosDeviceEventState {
     button: KeyCode,
     pressed: bool,
@@ -73,27 +73,13 @@ impl From<&ChaosDeviceDetailedEvent> for ChaosDeviceEvent {
 
 impl PartialEq for ChaosDeviceEvent {
     fn eq(&self, other: &ChaosDeviceEvent) -> bool {
-        match *self {
-            Self::CloseRequested => {
-                return *other == Self::CloseRequested;
-            }
-            Self::Focused => {
-                return *other == Self::Focused;
-            }
-            Self::Unfocused => {
-                return *other == Self::Unfocused;
-            }
-            Self::KeyPress(press) => match *other {
-                Self::KeyPress(other_press) => {
-                    return press == other_press;
-                }
-                _ => {
-                    return false;
-                }
-            },
-            Self::Unrecognized => {
-                return *other == Self::Unrecognized;
-            }
+        match (self, other) {
+            (Self::CloseRequested, Self::CloseRequested)
+            | (Self::Focused, Self::Focused)
+            | (Self::Unfocused, Self::Unfocused)
+            | (Self::Unrecognized, Self::Unrecognized) => true,
+            (Self::KeyPress(press), Self::KeyPress(other_press)) => press == other_press,
+            _ => false,
         }
     }
 }
@@ -246,9 +232,156 @@ impl PartialEq<ChaosDeviceEventRegistration> for ChaosDeviceEventState {
                 self.button == *key_code && self.pressed
             }
             ChaosDeviceEventRegistration::MultiKeyPress(key_code, repeats) => {
-                self.button == *key_code && self.pressed && self.actual_repeats % repeats == 0
+                self.button == *key_code && self.pressed && self.actual_repeats == *repeats
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+
+    fn hash_event(event: &ChaosDeviceEvent) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        event.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn test_chaos_device_event_equality() {
+        let e1 = ChaosDeviceEvent::Unfocused;
+        let e2 = ChaosDeviceEvent::Unfocused;
+        assert_eq!(e1, e2);
+    }
+
+    #[test]
+    fn detailed_key_press_converts_to_basic_key_press_without_pressed_state() {
+        let pressed = ChaosDeviceDetailedEvent::KeyPress(KeyCode::Escape, true);
+        let released = ChaosDeviceDetailedEvent::KeyPress(KeyCode::Escape, false);
+
+        assert_eq!(
+            ChaosDeviceEvent::from(pressed),
+            ChaosDeviceEvent::KeyPress(KeyCode::Escape)
+        );
+        assert_eq!(
+            ChaosDeviceEvent::from(&released),
+            ChaosDeviceEvent::KeyPress(KeyCode::Escape)
+        );
+    }
+
+    #[test]
+    fn different_key_presses_are_not_equal_or_hash_equivalent() {
+        let escape = ChaosDeviceEvent::KeyPress(KeyCode::Escape);
+        let space = ChaosDeviceEvent::KeyPress(KeyCode::Space);
+
+        assert_ne!(escape, space);
+        assert_ne!(hash_event(&escape), hash_event(&space));
+    }
+
+    #[test]
+    fn registration_converts_to_pressed_detailed_event() {
+        assert_eq!(
+            ChaosDeviceDetailedEvent::from(ChaosDeviceEventRegistration::KeyPress(KeyCode::Escape)),
+            ChaosDeviceDetailedEvent::KeyPress(KeyCode::Escape, true)
+        );
+        assert_eq!(
+            ChaosDeviceDetailedEvent::from(ChaosDeviceEventRegistration::MultiKeyPress(
+                KeyCode::Space,
+                2,
+            )),
+            ChaosDeviceDetailedEvent::KeyPress(KeyCode::Space, true)
+        );
+    }
+
+    #[test]
+    fn single_key_registration_matches_press_and_release_for_same_key() {
+        let registration = ChaosDeviceEventRegistration::KeyPress(KeyCode::Escape);
+
+        assert_eq!(
+            registration,
+            ChaosDeviceDetailedEvent::KeyPress(KeyCode::Escape, true)
+        );
+        assert_eq!(
+            registration,
+            ChaosDeviceDetailedEvent::KeyPress(KeyCode::Escape, false)
+        );
+        assert_ne!(
+            registration,
+            ChaosDeviceDetailedEvent::KeyPress(KeyCode::Space, true)
+        );
+    }
+
+    #[test]
+    fn registration_display_includes_variant_and_key_details() {
+        assert_eq!(
+            ChaosDeviceEventRegistration::CloseRequested.to_string(),
+            "CloseRequested"
+        );
+        assert_eq!(
+            ChaosDeviceEventRegistration::KeyPress(KeyCode::Escape).to_string(),
+            "KeyPress(Escape)"
+        );
+        assert_eq!(
+            ChaosDeviceEventRegistration::MultiKeyPress(KeyCode::Space, 2).to_string(),
+            "MultiKeyPress(Space, 2)"
+        );
+    }
+
+    #[test]
+    fn event_state_matches_single_registration_only_while_pressed() {
+        let mut state = ChaosDeviceEventState::new_single(KeyCode::Escape);
+        let registration = ChaosDeviceEventRegistration::KeyPress(KeyCode::Escape);
+
+        assert_ne!(state, registration);
+
+        state.update(
+            &ChaosDeviceDetailedEvent::KeyPress(KeyCode::Escape, true),
+            300,
+        );
+        assert_eq!(state, registration);
+
+        state.update(
+            &ChaosDeviceDetailedEvent::KeyPress(KeyCode::Escape, false),
+            300,
+        );
+        assert_ne!(state, registration);
+    }
+
+    #[test]
+    fn event_state_counts_multi_press_repeats_for_same_key() {
+        let mut state = ChaosDeviceEventState::new_multi(KeyCode::Escape, 2);
+        let registration = ChaosDeviceEventRegistration::MultiKeyPress(KeyCode::Escape, 2);
+
+        state.update(
+            &ChaosDeviceDetailedEvent::KeyPress(KeyCode::Escape, true),
+            300,
+        );
+        assert_ne!(state, registration);
+
+        state.update(
+            &ChaosDeviceDetailedEvent::KeyPress(KeyCode::Escape, false),
+            300,
+        );
+        state.update(
+            &ChaosDeviceDetailedEvent::KeyPress(KeyCode::Escape, true),
+            300,
+        );
+        assert_eq!(state, registration);
+    }
+
+    #[test]
+    fn event_state_ignores_other_keys() {
+        let mut state = ChaosDeviceEventState::new_single(KeyCode::Escape);
+        let registration = ChaosDeviceEventRegistration::KeyPress(KeyCode::Escape);
+
+        state.update(
+            &ChaosDeviceDetailedEvent::KeyPress(KeyCode::Space, true),
+            300,
+        );
+
+        assert_ne!(state, registration);
     }
 }
