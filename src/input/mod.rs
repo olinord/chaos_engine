@@ -7,4 +7,4 @@ The input strategy is this:
  */
 
 pub mod events;
-pub mod manager;
+pub mod system;

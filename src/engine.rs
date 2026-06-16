@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     ecs::{errors::ComponentErrors, world::ChaosWorld},
-    input::manager::ChaosDeviceEventSystem,
+    input::system::ChaosDeviceEventSystem,
     rendering::rendering_system::{ChaosRenderSystem, ChaosRenderableContainer},
 };
 

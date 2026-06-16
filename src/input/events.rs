@@ -217,6 +217,18 @@ impl ChaosDeviceEventState {
             self.pressed = !self.pressed;
         }
     }
+
+    pub fn is_pressed(&self) -> bool {
+        self.pressed
+    }
+
+    pub fn get_button(&self) -> KeyCode {
+        self.button
+    }
+
+    pub fn is_multi_pressed(&self, repeats: u8) -> bool {
+        self.pressed && self.actual_repeats == repeats
+    }
 }
 
 impl PartialEq for ChaosDeviceEventState {
