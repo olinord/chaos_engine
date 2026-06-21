@@ -1,9 +1,11 @@
 use chaos_engine::BufferContents;
 use chaos_engine::Vertex;
+use chaos_engine::device::bindings::ChaosBindingEvent;
+use chaos_engine::device::bindings::ChaosButton;
+use chaos_engine::device::events::ChaosKeyCode;
 use chaos_engine::ecs::component::ChaosComponentManager;
 use chaos_engine::ecs::system::ChaosSystem;
 use chaos_engine::engine::ChaosEngine;
-use chaos_engine::input;
 use chaos_engine::rendering::buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage};
 use chaos_engine::rendering::effect_factory::{EffectFactory, EffectUsage};
 use chaos_engine::rendering::rendering_system::{ChaosRenderableContainer, ChaosRenderableTrait};
@@ -18,6 +20,7 @@ use chaos_engine::vulkano::pipeline::GraphicsPipeline;
 use chaos_engine::vulkano::pipeline::graphics::viewport::Viewport;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[derive(BufferContents, Vertex)]
 #[repr(C)]
@@ -176,16 +179,42 @@ impl ChaosSystem for TriangleSpawnSystem {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum KeyEvents {
+    Space,
+    Other,
+}
+
 fn main() {
     let mut engine = ChaosEngine::new("Asteroidish", 1024, 1024).unwrap();
     engine
         .get_world_mut()
         .add_system(TriangleSpawnSystem::new());
 
+    let binding = ChaosBindingEvent::Held {
+        button: ChaosButton::Keyboard(ChaosKeyCode::Space),
+        duration: Duration::from_secs(1),
+        continue_after_matching: false,
+    };
+
+    engine
+        .get_device_event_system()
+        .bind(binding, KeyEvents::Space);
+
+    let binding = ChaosBindingEvent::Held {
+        button: ChaosButton::Keyboard(ChaosKeyCode::KeyM),
+        duration: Duration::from_secs(1),
+        continue_after_matching: true,
+    };
+
+    engine
+        .get_device_event_system()
+        .bind(binding, KeyEvents::Other);
+
     // let effect_builder = engine.create_effect_builder(CEEffectType::Rendering);
     // effect_builder.with_vertex_shader("line.vert".into(), "main".into());
     // effect_builder.with_pixel_shader("line.frag".into(), "main".into());
-
+    engine.run();
     println!("whoop");
     // add_system(AsteroidRenderSystem::new()).
     // add_system(CollisionSystem::new()).

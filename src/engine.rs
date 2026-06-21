@@ -1,11 +1,8 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use crate::{
+    device::system::DeviceEventSystem,
     ecs::{errors::ComponentErrors, world::ChaosWorld},
-    input::system::ChaosDeviceEventSystem,
     rendering::rendering_system::{ChaosRenderSystem, ChaosRenderableContainer},
 };
 
@@ -20,34 +17,33 @@ use winit::{
 
 pub struct ChaosEngine {
     world: ChaosWorld,
-    input_manager: ChaosDeviceEventSystem,
+    device_event_system: DeviceEventSystem,
     window: Option<Arc<winit::window::Window>>,
     pub rendering_system: Option<ChaosRenderSystem>,
     title: String,
     width: u32,
     height: u32,
-    frame_time: Duration,
+    frame_start_time: Instant,
 }
 
 impl ChaosEngine {
     pub fn new(title: &str, width: u32, height: u32) -> Result<ChaosEngine, &'static str> {
-        let input_manager = ChaosDeviceEventSystem::new();
+        let device_event_system = DeviceEventSystem::new();
 
-        //let communicator
         Ok(ChaosEngine {
             world: ChaosWorld::new(),
-            input_manager,
+            device_event_system,
             window: None,
             rendering_system: None,
             title: title.to_string(),
             width,
             height,
-            frame_time: Duration::new(0, 0),
+            frame_start_time: Instant::now(),
         })
     }
 
-    pub fn get_input_manager(&mut self) -> &mut ChaosDeviceEventSystem {
-        &mut self.input_manager
+    pub fn get_device_event_system(&mut self) -> &mut DeviceEventSystem {
+        &mut self.device_event_system
     }
 
     pub fn run(mut self) {
@@ -59,6 +55,42 @@ impl ChaosEngine {
 
     pub fn get_world_mut(&mut self) -> &mut ChaosWorld {
         &mut self.world
+    }
+
+    fn update(&mut self, event: &WindowEvent) -> Result<(), &'static str> {
+        for message in self.device_event_system.update(event) {
+            if let Err(error) = self.world.try_send_message(message) {
+                log::debug!("Input signal was not delivered: {}", error);
+            }
+        }
+        self.world
+            .update(self.frame_start_time.elapsed().as_secs_f32())
+    }
+
+    fn render(&mut self) -> Result<(), &'static str> {
+        let rendering_system = self
+            .rendering_system
+            .as_mut()
+            .ok_or("Rendering system is not initialized")?;
+
+        rendering_system.update(&mut self.world);
+        let mut buffer_builder = match rendering_system.start_frame() {
+            Some(buffer_builder) => buffer_builder,
+            None => return Err("Failed to start frame"),
+        };
+
+        let renderables = self
+            .world
+            .get_all_components_of_type::<ChaosRenderableContainer>();
+        let renderables = match renderables {
+            Ok(renderables) => renderables,
+            Err(ComponentErrors::ComponentNotFound(_)) => Vec::new(),
+            Err(err) => panic!("failed to get renderable components: {err:?}"),
+        };
+        rendering_system.render(renderables, &mut buffer_builder);
+        rendering_system.end_frame(buffer_builder);
+        self.frame_start_time = Instant::now();
+        Ok(())
     }
 }
 
@@ -84,37 +116,21 @@ impl ApplicationHandler for ChaosEngine {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let start = Instant::now();
-        self.input_manager.update_commands(&event);
-        // update the systems
-        self.world.update(self.frame_time.as_secs_f32()).unwrap();
-        self.rendering_system
-            .as_mut()
-            .unwrap()
-            .update(&mut self.world);
+        self.update(&event).unwrap_or_else(|err| {
+            log::error!("Error updating world: {}", err);
+        });
+
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
                 self.window.as_ref().unwrap().request_redraw();
-                let rendering_system = self.rendering_system.as_mut().unwrap();
-                let Some(mut buffer_builder) = rendering_system.start_frame() else {
-                    return;
-                };
-                let renderables = self
-                    .world
-                    .get_all_components_of_type::<ChaosRenderableContainer>();
-                let renderables = match renderables {
-                    Ok(renderables) => renderables,
-                    Err(ComponentErrors::ComponentNotFound(_)) => Vec::new(),
-                    Err(err) => panic!("failed to get renderable components: {err:?}"),
-                };
-                rendering_system.render(renderables, &mut buffer_builder);
-                rendering_system.end_frame(buffer_builder);
+                self.render().unwrap_or_else(|err| {
+                    log::error!("Error rendering: {}", err);
+                });
             }
             _ => (),
         }
-        self.frame_time = Instant::duration_since(&start, Instant::now());
     }
 }

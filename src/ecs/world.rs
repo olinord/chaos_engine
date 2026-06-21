@@ -5,7 +5,7 @@ use std::{
 };
 
 use chaos_communicator::{
-    communicator::{ChaosCommunicator, ChaosReceiver},
+    communicator::{ChaosCommunicationError, ChaosCommunicator, ChaosReceiver},
     message::ChaosMessage,
 };
 
@@ -47,6 +47,17 @@ impl ChaosWorld {
             }
             Err(_) => panic!("Failed to acquire communicator lock"),
         };
+    }
+
+    pub fn try_send_message(
+        &mut self,
+        message: ChaosMessage,
+    ) -> Result<(), ChaosCommunicationError> {
+        let guard = self
+            .communicator
+            .lock()
+            .expect("Failed to acquire communicator lock");
+        guard.send_message(message)
     }
 
     pub fn register_for<T: std::hash::Hash>(&mut self, event: T) -> ChaosReceiver {
