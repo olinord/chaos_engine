@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use chaos_communicator::communicator::ChaosReceiver;
 use vulkano::{
@@ -11,7 +11,7 @@ use vulkano::{
     device::{
         Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo, physical::PhysicalDevice,
     },
-    format::{ClearValue, Format},
+    format::ClearValue,
     image::view::ImageView,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::{FreeListAllocator, GenericMemoryAllocator, StandardMemoryAllocator},
@@ -36,21 +36,53 @@ pub type Fence = FenceSignalFuture<
     PresentFuture<CommandBufferExecFuture<JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture>>>,
 >;
 
+#[derive(Debug)]
+pub struct ChaosRenderContext {
+    physical_device: Arc<PhysicalDevice>,
+    device: Arc<Device>,
+    swapchain: Arc<Swapchain>,
+    image_views: Vec<Arc<ImageView>>,
+    memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
+    viewport: Viewport,
+}
+
+impl ChaosRenderContext {
+    pub fn device(&self) -> Arc<Device> {
+        self.device.clone()
+    }
+
+    pub fn physical_device(&self) -> Arc<PhysicalDevice> {
+        self.physical_device.clone()
+    }
+
+    pub fn swapchain(&self) -> Arc<Swapchain> {
+        self.swapchain.clone()
+    }
+
+    pub fn memory_allocator(&self) -> Arc<GenericMemoryAllocator<FreeListAllocator>> {
+        self.memory_allocator.clone()
+    }
+
+    pub fn viewport(&self) -> Viewport {
+        self.viewport.clone()
+    }
+
+    pub fn image_views(&self) -> Vec<Arc<ImageView>> {
+        self.image_views.clone()
+    }
+}
+
 #[allow(unused)]
 pub struct ChaosRenderSystem {
-    physical_device: Option<Arc<PhysicalDevice>>,
-    device: Option<Arc<Device>>,
+    render_context: Arc<ChaosRenderContext>,
     queue: Option<Arc<Queue>>,
     current_frame: u128,
     current_buffer: u32,
-    swapchain: Arc<Swapchain>,
-    image_views: Vec<Arc<ImageView>>,
     current_acquire_future: Option<SwapchainAcquireFuture>,
     fences: Vec<Option<Fence>>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     add_render_component: ChaosReceiver,
-    viewport: Viewport,
+    directories: HashMap<PathBuf, PathBuf>,
 }
 
 pub trait ChaosRenderableTrait {
@@ -59,13 +91,7 @@ pub trait ChaosRenderableTrait {
         command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     ) -> Result<(), Box<ValidationError>>;
 
-    fn initialize(
-        &self,
-        device: Arc<Device>,
-        memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-        viewport: &Viewport,
-        color_attachment_format: Format,
-    ) -> Result<(), &'static str>;
+    fn initialize(&mut self, render_context: &Arc<ChaosRenderContext>) -> Result<(), &'static str>;
 }
 
 pub struct ChaosRenderableContainer {
@@ -81,10 +107,6 @@ impl ChaosRenderableContainer {
             renderable: Arc::new(renderable),
         }
     }
-
-    pub fn from_arc(renderable: Arc<dyn ChaosRenderableTrait>) -> Self {
-        Self { renderable }
-    }
 }
 
 impl ChaosRenderSystem {
@@ -92,6 +114,7 @@ impl ChaosRenderSystem {
         display_handle: &DisplayHandle,
         window: Arc<Window>,
         add_render_component: ChaosReceiver,
+        directories: &HashMap<PathBuf, PathBuf>,
     ) -> ChaosRenderSystem {
         let library = VulkanLibrary::new().expect("no local Vulkan library/DLL");
 
@@ -182,26 +205,31 @@ impl ChaosRenderSystem {
 
         let fences: Vec<Option<Fence>> = (0..3).map(|_| None).collect();
 
+        let render_context = Arc::new(ChaosRenderContext {
+            physical_device: physical_device.clone(),
+            device: device.clone(),
+            swapchain,
+            image_views,
+            memory_allocator: memory_allocator.clone(),
+            viewport,
+        });
+
         ChaosRenderSystem {
-            physical_device: Some(physical_device),
-            device: Some(device),
+            render_context: render_context.clone(),
             queue: Some(queue),
             current_frame: 0,
             current_buffer: 0,
-            swapchain,
-            image_views,
             current_acquire_future: None,
             fences,
             command_buffer_allocator,
-            memory_allocator,
             add_render_component,
-            viewport,
+            directories: directories.clone(),
         }
     }
 
     pub fn start_frame(&mut self) -> Option<AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>> {
         let (image_i, suboptimal, acquire_future) =
-            match swapchain::acquire_next_image(self.swapchain.clone(), None)
+            match swapchain::acquire_next_image(self.render_context.swapchain.clone(), None)
                 .map_err(Validated::unwrap)
             {
                 Ok(r) => r,
@@ -230,16 +258,17 @@ impl ChaosRenderSystem {
         )
         .unwrap();
 
-        let mut color_attachment =
-            RenderingAttachmentInfo::image_view(self.image_views[image_i as usize].clone());
+        let mut color_attachment = RenderingAttachmentInfo::image_view(
+            self.render_context.image_views[image_i as usize].clone(),
+        );
         color_attachment.load_op = AttachmentLoadOp::Clear;
         color_attachment.store_op = AttachmentStoreOp::Store;
         color_attachment.clear_value = Some(ClearValue::Float([0.0, 0.0, 0.0, 1.0]));
 
         let rendering_info = RenderingInfo {
             render_area_extent: [
-                self.viewport.extent[0] as u32,
-                self.viewport.extent[1] as u32,
+                self.render_context.viewport.extent[0] as u32,
+                self.render_context.viewport.extent[1] as u32,
             ],
             color_attachments: vec![Some(color_attachment)],
             ..Default::default()
@@ -279,7 +308,7 @@ impl ChaosRenderSystem {
         let previous_future = match self.fences[image_i as usize].take() {
             // Create a NowFuture
             None => {
-                let mut now = sync::now(self.device.clone().unwrap());
+                let mut now = sync::now(self.render_context.device.clone());
                 now.cleanup_finished();
 
                 now.boxed()
@@ -294,7 +323,10 @@ impl ChaosRenderSystem {
             .unwrap()
             .then_swapchain_present(
                 self.queue.clone().unwrap(),
-                SwapchainPresentInfo::swapchain_image_index(self.swapchain.clone(), image_i),
+                SwapchainPresentInfo::swapchain_image_index(
+                    self.render_context.swapchain.clone(),
+                    image_i,
+                ),
             )
             .then_signal_fence_and_flush();
 
@@ -313,7 +345,7 @@ impl ChaosRenderSystem {
     pub fn update(&mut self, world: &mut ChaosWorld) {
         // iterate over the added and removed components
         // gather all entity ids from the add_render_component receiver
-        let mut added_entities: Vec<&ChaosRenderableContainer> = vec![];
+        let mut added_entity_ids = vec![];
         loop {
             let message = self.add_render_component.receive();
             if message.is_none() {
@@ -321,45 +353,24 @@ impl ChaosRenderSystem {
             }
             let message = message.unwrap();
             let entity_id = message.get("entity_id").unwrap();
-            added_entities.push(
-                world
-                    .get_component::<ChaosRenderableContainer>(entity_id)
-                    .unwrap(),
-            );
+            added_entity_ids.push(entity_id);
         }
 
-        for entity in added_entities {
-            match entity.renderable.initialize(
-                self.device.clone().unwrap(),
-                self.memory_allocator.clone(),
-                &self.viewport,
-                self.swapchain.image_format(),
-            ) {
-                Ok(()) => {}
-                Err(e) => {
-                    println!("Failed to initialize renderable: {}", e);
+        for entity_id in added_entity_ids {
+            if let Ok(entity) = world.get_component_mut::<ChaosRenderableContainer>(entity_id) {
+                if let Some(renderable) = Arc::get_mut(&mut entity.renderable) {
+                    match renderable.initialize(&self.render_context.clone()) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            println!("Failed to initialize renderable: {}", e);
+                        }
+                    }
                 }
             }
         }
     }
 
-    // pub fn create_command_buffer<T: BufferContents>(
-    //     &self,
-    //     buffer: Arc<CEBuffer<T>>,
-    //     effect: Arc<CEEffect>,
-    // ) -> Arc<PrimaryAutoCommandBuffer> {
-    //     let device = self.device.as_ref().unwrap();
-    //     let queue = self.queue.as_ref().unwrap();
-
-    //     let command_buffer_allocator =
-    //         StandardCommandBufferAllocator::new(device.clone(), Default::default());
-
-    //     return get_command_buffers(
-    //         &command_buffer_allocator,
-    //         queue,
-    //         &effect.pipeline,
-    //         &self.framebuffers,
-    //         &buffer.buffer,
-    //     );
-    // }
+    pub fn render_context(&self) -> &Arc<ChaosRenderContext> {
+        &self.render_context
+    }
 }

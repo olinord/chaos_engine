@@ -7,19 +7,14 @@ use chaos_engine::ecs::component::ChaosComponentManager;
 use chaos_engine::ecs::system::ChaosSystem;
 use chaos_engine::engine::ChaosEngine;
 use chaos_engine::rendering::buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage};
+use chaos_engine::rendering::effect::ChaosEffect;
 use chaos_engine::rendering::effect_factory::{EffectFactory, EffectUsage};
+use chaos_engine::rendering::rendering_system::ChaosRenderContext;
 use chaos_engine::rendering::rendering_system::{ChaosRenderableContainer, ChaosRenderableTrait};
 use chaos_engine::vulkano::ValidationError;
 use chaos_engine::vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
-use chaos_engine::vulkano::device::Device;
-use chaos_engine::vulkano::format::Format;
-use chaos_engine::vulkano::memory::allocator::{
-    FreeListAllocator, GenericMemoryAllocator, StandardMemoryAllocator,
-};
-use chaos_engine::vulkano::pipeline::GraphicsPipeline;
-use chaos_engine::vulkano::pipeline::graphics::viewport::Viewport;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(BufferContents, Vertex)]
@@ -32,12 +27,24 @@ struct MyVertex {
 }
 
 struct TriangleRenderable {
-    pipeline: Mutex<Option<Arc<GraphicsPipeline>>>,
-    buffer: Mutex<ChaosBuffer<MyVertex>>,
+    effect: Option<ChaosEffect>,
+    buffer: Option<ChaosBuffer>,
 }
 
 impl TriangleRenderable {
     fn new() -> Self {
+        Self {
+            effect: None,
+            buffer: None,
+        }
+    }
+}
+
+impl ChaosRenderableTrait for TriangleRenderable {
+    fn initialize(
+        &mut self,
+        rendering_context: &Arc<ChaosRenderContext>,
+    ) -> Result<(), &'static str> {
         let vertices = vec![
             MyVertex {
                 position: [0.0, -0.5],
@@ -53,62 +60,27 @@ impl TriangleRenderable {
             },
         ];
 
-        Self {
-            pipeline: Mutex::new(None),
-            buffer: Mutex::new(ChaosBuffer::new(
-                "triangle".to_string(),
-                vertices,
-                ChaosBufferUsage::VertexBuffer,
-                ChaosBufferMemoryType::PreferDevice,
-            )),
+        let usage = EffectUsage::new("shaders:/triangle".into());
+
+        let effect = EffectFactory::instance().get_effect::<MyVertex>(&usage, rendering_context);
+        if let Err(_error) = effect {
+            let error_string = format!("Failed to create triangle pipeline: {}", _error);
+            println!("{}", error_string);
+            return Err("boohoo");
         }
-    }
-}
 
-impl ChaosRenderableTrait for TriangleRenderable {
-    fn initialize(
-        &self,
-        device: Arc<Device>,
-        _memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-        viewport: &Viewport,
-        color_attachment_format: Format,
-    ) -> Result<(), &'static str> {
-        let shader_root = std::env::current_exe()
-            .map_err(|_| "Failed to find current executable")?
-            .parent()
-            .ok_or("Failed to find executable directory")?
-            .join("res/shaders");
+        let mut buffer = ChaosBuffer::new(
+            "triangle-vertex-buffer".into(),
+            ChaosBufferUsage::VertexBuffer,
+            ChaosBufferMemoryType::PreferDevice,
+            rendering_context.clone(),
+        );
+        buffer
+            .set_data(vertices)
+            .map_err(|_| "Failed to set triangle vertex buffer data")?;
 
-        EffectFactory::instance()
-            .load_from_path(&shader_root, &device)
-            .map_err(|_| "Failed to load shaders")?;
-
-        println!("loaded shaders: {:?}", EffectFactory::instance().list());
-
-        let usage = EffectUsage {
-            path: PathBuf::from(shader_root).join("triangle"),
-            viewport: viewport.clone(),
-            color_attachment_count: 1,
-            color_attachment_format,
-        };
-
-        let pipeline = EffectFactory::instance().get_effect::<MyVertex>(&usage, &device);
-        if let Err(_) = &pipeline {
-            return Err("Failed to create triangle pipeline");
-        }
-        let pipeline = pipeline.unwrap();
-
-        let standard_allocator = Arc::new(StandardMemoryAllocator::new_default(device));
-        self.buffer
-            .lock()
-            .map_err(|_| "Failed to lock triangle vertex buffer")?
-            .initialize(standard_allocator)
-            .map_err(|_| "Failed to initialize triangle vertex buffer")?;
-
-        *self
-            .pipeline
-            .lock()
-            .map_err(|_| "Failed to lock triangle pipeline")? = Some(pipeline);
+        self.effect = Some(effect.unwrap());
+        self.buffer = Some(buffer);
 
         Ok(())
     }
@@ -117,19 +89,21 @@ impl ChaosRenderableTrait for TriangleRenderable {
         &self,
         command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     ) -> Result<(), Box<ValidationError>> {
-        let pipeline = self.pipeline.lock().unwrap().as_ref().unwrap().clone();
+        if self.effect.is_none() || self.buffer.is_none() {
+            return Ok(());
+        }
+
         let buffer = self
             .buffer
-            .lock()
-            .unwrap()
-            .buffer
             .as_ref()
+            .unwrap()
+            .buffer()
             .unwrap()
             .as_ref()
             .clone();
 
         command_buffer
-            .bind_pipeline_graphics(pipeline)?
+            .bind_pipeline_graphics(self.effect.as_ref().unwrap().pipeline())?
             .bind_vertex_buffers(0, buffer)?;
         unsafe {
             command_buffer.draw(3, 1, 0, 0)?;
@@ -187,9 +161,17 @@ enum KeyEvents {
 
 fn main() {
     let mut engine = ChaosEngine::new("Asteroidish", 1024, 1024).unwrap();
-    engine
-        .get_world_mut()
-        .add_system(TriangleSpawnSystem::new());
+    let shader_root = std::env::current_exe()
+        .map_err(|_| "Failed to find current executable")
+        .unwrap()
+        .parent()
+        .ok_or("Failed to find executable directory")
+        .unwrap()
+        .join("res/shaders");
+
+    engine.add_directory(PathBuf::from("shaders"), shader_root);
+
+    engine.world_mut().add_system(TriangleSpawnSystem::new());
 
     let binding = ChaosBindingEvent::Held {
         button: ChaosButton::Keyboard(ChaosKeyCode::Space),
@@ -197,9 +179,7 @@ fn main() {
         continue_after_matching: false,
     };
 
-    engine
-        .get_device_event_system()
-        .bind(binding, KeyEvents::Space);
+    engine.device_event_system().bind(binding, KeyEvents::Space);
 
     let binding = ChaosBindingEvent::Held {
         button: ChaosButton::Keyboard(ChaosKeyCode::KeyM),
@@ -207,9 +187,7 @@ fn main() {
         continue_after_matching: true,
     };
 
-    engine
-        .get_device_event_system()
-        .bind(binding, KeyEvents::Other);
+    engine.device_event_system().bind(binding, KeyEvents::Other);
 
     // let effect_builder = engine.create_effect_builder(CEEffectType::Rendering);
     // effect_builder.with_vertex_shader("line.vert".into(), "main".into());

@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
-use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
+use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter};
+
+use crate::rendering::rendering_system::ChaosRenderContext;
 
 #[derive(Debug, Clone)]
 pub enum ChaosBufferUsage {
@@ -30,52 +32,37 @@ pub enum ChaosBufferMemoryType {
 }
 
 #[derive(Debug, Clone)]
-pub struct ChaosBuffer<T: BufferContents + Send + Sync> {
+pub struct ChaosBuffer {
     pub name: String,
-    pub buffer: Option<Arc<Subbuffer<[T]>>>,
-    pub usage: ChaosBufferUsage,
+    buffer: Option<Arc<Subbuffer<[u8]>>>,
+    usage: ChaosBufferUsage,
     memory_type_filter: ChaosBufferMemoryType,
-    pub data: Vec<T>,
+    length: usize,
+    render_context: Arc<ChaosRenderContext>,
 }
 
-impl<T> Default for ChaosBuffer<T>
-where
-    T: BufferContents + Send + Sync,
-{
-    fn default() -> Self {
-        ChaosBuffer {
-            name: String::new(),
-            buffer: None,
-            usage: ChaosBufferUsage::Invalid,
-            memory_type_filter: ChaosBufferMemoryType::PreferDevice,
-            data: Vec::new(),
-        }
-    }
-}
-
-impl<T> ChaosBuffer<T>
-where
-    T: BufferContents + Send + Sync,
-{
+impl ChaosBuffer {
     pub fn new(
         name: String,
-        data: Vec<T>,
         usage: ChaosBufferUsage,
         memory_type_filter: ChaosBufferMemoryType,
-    ) -> ChaosBuffer<T> {
-        ChaosBuffer::<T> {
+        render_context: Arc<ChaosRenderContext>,
+    ) -> ChaosBuffer {
+        ChaosBuffer {
             name,
             buffer: None,
             usage,
             memory_type_filter,
-            data,
+            length: 0,
+            render_context,
         }
     }
 
-    pub fn initialize(&mut self, allocator: Arc<StandardMemoryAllocator>) -> Result<(), String> {
-        let v: Vec<T> = self.data.drain(..).collect();
+    pub fn set_data<T: BufferContents>(&mut self, data: Vec<T>) -> Result<(), String> {
+        self.length = data.len();
+
         let buffer = Buffer::from_iter(
-            allocator,
+            self.render_context.memory_allocator(),
             BufferCreateInfo {
                 usage: self.usage.clone().into(),
                 ..Default::default()
@@ -84,16 +71,24 @@ where
                 memory_type_filter: self.memory_type_filter.clone().into(),
                 ..Default::default()
             },
-            v,
+            data.into_iter(),
         );
 
         match buffer {
             Ok(buffer) => {
-                self.buffer = Some(Arc::new(buffer));
+                self.buffer = Some(Arc::new(buffer.into_bytes()));
                 Ok(())
             }
-            Err(error) => Err(format!("{:?}", error)),
+            Err(error) => {
+                self.buffer = None;
+                self.length = 0;
+                Err(format!("{:?}", error))
+            }
         }
+    }
+
+    pub fn buffer(&self) -> Option<Arc<Subbuffer<[u8]>>> {
+        self.buffer.clone()
     }
 }
 

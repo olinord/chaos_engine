@@ -1,9 +1,12 @@
-use std::{sync::Arc, time::Instant};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
 use crate::{
     device::system::DeviceEventSystem,
     ecs::{errors::ComponentErrors, world::ChaosWorld},
-    rendering::rendering_system::{ChaosRenderSystem, ChaosRenderableContainer},
+    rendering::{
+        effect_factory::EffectFactory,
+        rendering_system::{ChaosRenderContext, ChaosRenderSystem, ChaosRenderableContainer},
+    },
 };
 
 use winit::{
@@ -24,6 +27,7 @@ pub struct ChaosEngine {
     width: u32,
     height: u32,
     frame_start_time: Instant,
+    directories: HashMap<PathBuf, PathBuf>,
 }
 
 impl ChaosEngine {
@@ -39,11 +43,47 @@ impl ChaosEngine {
             width,
             height,
             frame_start_time: Instant::now(),
+            directories: HashMap::new(),
         })
     }
 
-    pub fn get_device_event_system(&mut self) -> &mut DeviceEventSystem {
+    fn initialize_rendering_system(&mut self, event_loop: &ActiveEventLoop) {
+        let size = PhysicalSize::new(self.width, self.height);
+        let window_attributes = WindowAttributes::default()
+            .with_title(self.title.clone())
+            .with_inner_size(size);
+
+        self.window = Some(Arc::new(
+            event_loop.create_window(window_attributes).unwrap(),
+        ));
+
+        let add_subscription = self.world.subscribe_to_add::<ChaosRenderableContainer>();
+
+        let rendering_system = ChaosRenderSystem::new(
+            &event_loop.display_handle().unwrap(),
+            self.window.clone().unwrap(),
+            add_subscription,
+            &self.directories,
+        );
+        self.rendering_system = Some(rendering_system);
+
+        // push the directories to the effect factory so we can use shaders
+        EffectFactory::instance().load_from_directories(&self.directories, self.render_context());
+    }
+
+    pub fn add_directory(&mut self, root: PathBuf, path: PathBuf) {
+        self.directories.insert(root, path);
+    }
+
+    pub fn device_event_system(&mut self) -> &mut DeviceEventSystem {
         &mut self.device_event_system
+    }
+
+    pub fn render_context(&self) -> &Arc<ChaosRenderContext> {
+        match &self.rendering_system {
+            Some(rendering_system) => rendering_system.render_context(),
+            None => panic!("Trying to get render context but rendering system is not initialized"),
+        }
     }
 
     pub fn run(mut self) {
@@ -53,7 +93,7 @@ impl ChaosEngine {
             .expect("Failed to run event loop");
     }
 
-    pub fn get_world_mut(&mut self) -> &mut ChaosWorld {
+    pub fn world_mut(&mut self) -> &mut ChaosWorld {
         &mut self.world
     }
 
@@ -96,23 +136,9 @@ impl ChaosEngine {
 
 impl ApplicationHandler for ChaosEngine {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let size = PhysicalSize::new(self.width, self.height);
-        let window_attributes = WindowAttributes::default()
-            .with_title(self.title.clone())
-            .with_inner_size(size);
-
-        self.window = Some(Arc::new(
-            event_loop.create_window(window_attributes).unwrap(),
-        ));
-
-        let add_subscription = self.world.subscribe_to_add::<ChaosRenderableContainer>();
-
-        let rendering_system = ChaosRenderSystem::new(
-            &event_loop.display_handle().unwrap(),
-            self.window.clone().unwrap(),
-            add_subscription,
-        );
-        self.rendering_system = Some(rendering_system);
+        if self.rendering_system.is_none() {
+            self.initialize_rendering_system(event_loop);
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {

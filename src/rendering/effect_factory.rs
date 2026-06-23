@@ -13,11 +13,14 @@ use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::subpass::{PipelineRenderingCreateInfo, PipelineSubpassType};
 use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
-use vulkano::pipeline::graphics::viewport::ViewportState;
+use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
 use vulkano::pipeline::{GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
 use vulkano::shader::spirv::bytes_to_words;
 use vulkano::shader::{self, EntryPoint, ShaderModule, ShaderModuleCreateInfo};
+
+use crate::rendering::effect::ChaosEffect;
+use crate::rendering::rendering_system::ChaosRenderContext;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ShaderType {
@@ -35,21 +38,70 @@ struct ChaosShaderModule {
 #[derive(Debug, Clone)]
 pub enum ChaosEffectBuildError {
     MissingDevice,
-    MissinglShader { error: String },
+    MissingShader {
+        error: String,
+    },
     UndefinedShaderType,
-    InvalidShader { shader_path: String, error: String },
-    ShaderNotFound { shader_path: String, error: String },
-    MissingEntryPoint { shader_path: String },
-    VulkanError { vulkan_error: String },
+    InvalidShader {
+        shader_path: String,
+        error: String,
+    },
+    ShaderNotFound {
+        shader_path: String,
+        error: String,
+    },
+    DirectoryNotFound {
+        directory_path: String,
+        error: String,
+    },
+    MissingEntryPoint {
+        shader_path: String,
+    },
+    VulkanError {
+        vulkan_error: String,
+    },
+}
+#[derive(Debug, Clone)]
+pub struct EffectColorAttachment {
+    pub format: Format,
+    pub count: u32,
 }
 
 pub struct EffectUsage {
     pub path: PathBuf,
-    pub viewport: vulkano::pipeline::graphics::viewport::Viewport,
-    pub color_attachment_count: u32,
-    pub color_attachment_format: Format,
+    viewports: Vec<Viewport>,
+    color_attachment: Option<EffectColorAttachment>,
 }
 
+impl EffectUsage {
+    pub fn new(path: PathBuf) -> Self {
+        EffectUsage {
+            path,
+            viewports: Vec::new(),
+            color_attachment: None,
+        }
+    }
+
+    pub fn with_viewports(mut self, viewports: Vec<Viewport>) -> Self {
+        self.viewports = viewports;
+        self
+    }
+
+    pub fn with_color_attachment(mut self, format: Format, count: u32) -> Self {
+        self.color_attachment = Some(EffectColorAttachment { format, count });
+        self
+    }
+
+    pub fn viewports(&self) -> Vec<Viewport> {
+        self.viewports.clone()
+    }
+
+    pub fn color_attachment(&self) -> Option<EffectColorAttachment> {
+        self.color_attachment.clone()
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ShaderEntry {
     pub shaders: HashMap<ShaderType, ChaosShaderModule>,
     pub stages: Vec<PipelineShaderStageCreateInfo>,
@@ -104,47 +156,88 @@ impl EffectFactory {
         INSTANCE.get_or_init(EffectFactory::new)
     }
 
+    pub fn load_from_directories(
+        &self,
+        directories: &HashMap<PathBuf, PathBuf>,
+        render_context: &Arc<ChaosRenderContext>,
+    ) {
+        for (app_path, path) in directories.iter() {
+            match self.load_from_path(path, render_context) {
+                Ok(shaders) => {
+                    for (shader_path, entry) in shaders.iter() {
+                        if let Ok(relative_path) = shader_path.strip_prefix(path) {
+                            // create a path that is platform independant and uses the app_path as a "drive" prefix
+
+                            let mut path_str = format!("{}:", app_path.display());
+                            relative_path
+                                .components()
+                                .for_each(|component| match component {
+                                    std::path::Component::Normal(os_str) => {
+                                        path_str +=
+                                            format!("/{}", os_str.to_string_lossy()).as_str();
+                                    }
+                                    _ => {}
+                                });
+
+                            let modified_shader_path = PathBuf::from(path_str);
+
+                            log::debug!("Found shader {}", modified_shader_path.display());
+                            self.shaders
+                                .write()
+                                .unwrap()
+                                .insert(modified_shader_path, entry.clone());
+                        }
+                    }
+                    let mut shader_map = self.shaders.write().unwrap();
+                    shader_map.extend(shaders);
+                }
+                Err(error) => {
+                    log::error!(
+                        "Failed to load shaders from directory {}: {}",
+                        path.display(),
+                        error
+                    );
+                }
+            }
+        }
+    }
+
     /// Load all shaders from the given root path.
     /// Expects files with extensions: .vert / .vs (vertex) and .frag / .ps (pixel)
-    pub fn load_from_path<P: AsRef<Path>>(
+    fn load_from_path<P: AsRef<Path>>(
         &self,
         root_path: P,
-        device: &Arc<Device>,
-    ) -> Result<(), String> {
+        render_context: &Arc<ChaosRenderContext>,
+    ) -> Result<HashMap<PathBuf, ShaderEntry>, String> {
         let root = root_path.as_ref();
 
         if !root.exists() {
-            return Err(format!("Shader path does not exist: {:?}", root));
+            return Err(format!("Path {} does not exist", root.display()));
         }
 
-        let mut shaders: HashMap<PathBuf, ShaderEntry> = HashMap::new();
-
-        Self::walk_dir(root, &mut shaders, device)
+        let device = render_context.device();
+        let mut shaders = Self::walk_dir(root, &device)
             .map_err(|e| format!("Failed to walk shader directory: {}", e))?;
 
-        let mut cache = self
-            .shaders
-            .write()
-            .map_err(|e| format!("Failed to acquire write lock: {}", e))?;
-
-        for (_, entry) in &mut shaders.iter_mut() {
-            entry.initialize(device);
+        for (_, entry) in shaders.iter_mut() {
+            entry.initialize(&device);
         }
-        cache.extend(shaders);
 
-        Ok(())
+        Ok(shaders)
     }
 
     fn walk_dir(
         current_dir: &Path,
-        shaders: &mut HashMap<PathBuf, ShaderEntry>,
         device: &Arc<Device>,
-    ) -> Result<(), ChaosEffectBuildError> {
+    ) -> Result<HashMap<PathBuf, ShaderEntry>, ChaosEffectBuildError> {
+        let mut shaders: HashMap<PathBuf, ShaderEntry> = HashMap::new();
         let entries = match fs::read_dir(current_dir) {
             Ok(e) => e,
             Err(e) => {
-                log::info!("Failed to read shader directory: {}", e);
-                return Ok(());
+                return Err(ChaosEffectBuildError::DirectoryNotFound {
+                    directory_path: current_dir.display().to_string(),
+                    error: e.to_string(),
+                });
             }
         };
 
@@ -159,7 +252,8 @@ impl EffectFactory {
             let path = entry.path();
 
             if path.is_dir() {
-                Self::walk_dir(&path, shaders, device)?;
+                let inner = Self::walk_dir(&path, device)?;
+                shaders.extend(inner);
             } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                 let shader_ext = if ext == "spv" {
@@ -188,7 +282,7 @@ impl EffectFactory {
                     continue;
                 }
 
-                let shader_key = path.with_file_name(shader_name);
+                let shader_key = path.with_file_name(shader_name).clone();
                 let entry = shaders.entry(shader_key).or_insert_with(ShaderEntry::new);
 
                 let bytes = match std::fs::read(&path) {
@@ -196,7 +290,11 @@ impl EffectFactory {
                     Err(e) => {
                         return Err(ChaosEffectBuildError::ShaderNotFound {
                             shader_path: path.display().to_string(),
-                            error: e.to_string(),
+                            error: format!(
+                                "Trying to read file {} caused error {}",
+                                path.display(),
+                                e
+                            ),
                         });
                     }
                 };
@@ -206,7 +304,11 @@ impl EffectFactory {
                     Err(e) => {
                         return Err(ChaosEffectBuildError::InvalidShader {
                             shader_path: path.display().to_string(),
-                            error: e.to_string(),
+                            error: format!(
+                                "Trying to convert bytes to words for file {} caused error {}",
+                                path.display(),
+                                e
+                            ),
                         });
                     }
                 };
@@ -216,7 +318,11 @@ impl EffectFactory {
                     shader::ShaderModule::new(device.clone(), vs_shader_creation).map_err(|e| {
                         ChaosEffectBuildError::InvalidShader {
                             shader_path: path.display().to_string(),
-                            error: e.to_string(),
+                            error: format!(
+                                "Trying to create shader module for file {} caused error {}",
+                                path.display(),
+                                e
+                            ),
                         }
                     })?
                 };
@@ -236,7 +342,7 @@ impl EffectFactory {
             }
         }
 
-        Ok(())
+        Ok(shaders)
     }
 
     /// Returns all loaded shader names
@@ -250,8 +356,8 @@ impl EffectFactory {
     pub fn get_effect<T: Vertex>(
         &self,
         usage: &EffectUsage,
-        device: &Arc<Device>,
-    ) -> Result<Arc<GraphicsPipeline>, ChaosEffectBuildError> {
+        render_context: &Arc<ChaosRenderContext>,
+    ) -> Result<ChaosEffect, ChaosEffectBuildError> {
         let path = &usage.path;
         let shader_map = self.shaders.read();
         if shader_map.is_err() {
@@ -263,26 +369,29 @@ impl EffectFactory {
 
         let shader_entries = shader_map.unwrap();
         let entry = shader_entries.get(path);
-        if entry.is_none() {
-            return Err(ChaosEffectBuildError::ShaderNotFound {
-                shader_path: path.display().to_string(),
-                error: "Shader not found in cache".to_string(),
-            });
+        match entry {
+            Some(shader_entry) => {
+                Self::create_rendering_effect::<T>(path, shader_entry, usage, render_context)
+            }
+            None => {
+                return Err(ChaosEffectBuildError::ShaderNotFound {
+                    shader_path: path.display().to_string(),
+                    error: format!("Shader not found in cache"),
+                });
+            }
         }
-        let entry = entry.unwrap();
-        Self::create_rendering_effect::<T>(path, entry, usage, device)
     }
 
     fn create_rendering_effect<T: Vertex>(
         shader_path: &Path,
         shader_entry: &ShaderEntry,
         usage: &EffectUsage,
-        device: &Arc<Device>,
-    ) -> Result<Arc<GraphicsPipeline>, ChaosEffectBuildError> {
+        render_context: &Arc<ChaosRenderContext>,
+    ) -> Result<ChaosEffect, ChaosEffectBuildError> {
         let vertex_entry_point = &shader_entry
             .shaders
             .get(&ShaderType::Vertex)
-            .ok_or_else(|| ChaosEffectBuildError::MissinglShader {
+            .ok_or_else(|| ChaosEffectBuildError::MissingShader {
                 error: format!("Missing vertex shader for path: {}", shader_path.display()),
             })?
             .entry_point;
@@ -294,9 +403,26 @@ impl EffectFactory {
                 vulkan_error: format!("{:?}", e),
             });
         }
+
         let vertex_input_state = vertex_input_state.unwrap();
+        let viewports = if usage.viewports.is_empty() {
+            vec![render_context.viewport()]
+        } else {
+            usage.viewports.clone()
+        };
+
+        let color_attachment_format = match &usage.color_attachment {
+            Some(ca) => ca.format,
+            None => render_context.swapchain().image_format(),
+        };
+
+        let color_attachment_count = match &usage.color_attachment {
+            Some(ca) => ca.count,
+            None => 1,
+        };
+
         let result = GraphicsPipeline::new(
-            device.clone(),
+            render_context.device().clone(),
             None,
             GraphicsPipelineCreateInfo {
                 // The stages of our pipeline, we have vertex and fragment stages.
@@ -307,7 +433,7 @@ impl EffectFactory {
                 input_assembly_state: Some(InputAssemblyState::default()),
                 // Set the fixed viewport.
                 viewport_state: Some(ViewportState {
-                    viewports: [usage.viewport.clone()].into_iter().collect(),
+                    viewports: viewports.into_iter().collect(),
                     ..Default::default()
                 }),
                 // Ignore these for now.
@@ -315,14 +441,14 @@ impl EffectFactory {
                 multisample_state: Some(MultisampleState::default()),
                 subpass: Some(PipelineSubpassType::BeginRendering(
                     PipelineRenderingCreateInfo {
-                        color_attachment_formats: (0..usage.color_attachment_count)
-                            .map(|_| Some(usage.color_attachment_format))
+                        color_attachment_formats: (0..color_attachment_count)
+                            .map(|_| Some(color_attachment_format))
                             .collect(),
                         ..Default::default()
                     },
                 )),
                 color_blend_state: Some(ColorBlendState::with_attachment_states(
-                    usage.color_attachment_count,
+                    color_attachment_count,
                     ColorBlendAttachmentState::default(),
                 )),
                 ..GraphicsPipelineCreateInfo::layout(shader_entry.layout.clone().unwrap())
@@ -330,7 +456,11 @@ impl EffectFactory {
         );
 
         match result {
-            Ok(pipeline) => Ok(pipeline),
+            Ok(pipeline) => Ok(ChaosEffect::new(
+                format!("{}", shader_path.display()).as_str(),
+                pipeline,
+                render_context.clone(),
+            )),
             Err(vulkan_error) => Err(ChaosEffectBuildError::VulkanError {
                 vulkan_error: format!("{:?}", vulkan_error),
             }),
@@ -342,7 +472,7 @@ impl Display for ChaosEffectBuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ChaosEffectBuildError::MissingDevice => write!(f, "No device provided"),
-            ChaosEffectBuildError::MissinglShader { error } => {
+            ChaosEffectBuildError::MissingShader { error } => {
                 write!(f, "Missing shader: {}", error)
             }
             ChaosEffectBuildError::UndefinedShaderType => {
@@ -352,7 +482,17 @@ impl Display for ChaosEffectBuildError {
                 write!(f, "Invalid shader at path {}: {}", shader_path, error)
             }
             ChaosEffectBuildError::ShaderNotFound { shader_path, error } => {
-                write!(f, "Shader not found at path {}: {}", shader_path, error)
+                write!(f, "Shader {} not found : {}", shader_path, error)
+            }
+            ChaosEffectBuildError::DirectoryNotFound {
+                directory_path,
+                error,
+            } => {
+                write!(
+                    f,
+                    "Directory not found at path {}: {}",
+                    directory_path, error
+                )
             }
             ChaosEffectBuildError::MissingEntryPoint { shader_path } => {
                 write!(f, "Missing entry point in shader at path {}", shader_path)
