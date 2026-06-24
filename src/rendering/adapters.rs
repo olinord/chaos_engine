@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use log::info;
 use vulkano::{
     device::{
         DeviceExtensions, QueueFlags,
@@ -14,14 +15,14 @@ pub fn select_physical_device(
     surface: &Arc<Surface>,
     device_extensions: &DeviceExtensions,
 ) -> (Arc<PhysicalDevice>, u32) {
-    println!("Selecting physical device...");
+    info!("Selecting physical device...");
     // print out the devices and their properties
     for device in instance
         .enumerate_physical_devices()
         .expect("failed to enumerate physical devices")
     {
         let properties = device.properties();
-        println!(
+        info!(
             "Device: {} (type: {:?}, api version: {}, driver version: {}, vendor ID: {}, device ID: {})",
             properties.device_name,
             properties.device_type,
@@ -54,7 +55,7 @@ pub fn select_physical_device(
             _ => 4,
         })
         .expect("no device available");
-    println!(
+    info!(
         "Using device: {} (type: {:?})",
         physical_device.properties().device_name,
         physical_device.properties().device_type,

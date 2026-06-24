@@ -6,6 +6,8 @@ use chaos_engine::device::events::ChaosKeyCode;
 use chaos_engine::ecs::component::ChaosComponentManager;
 use chaos_engine::ecs::system::ChaosSystem;
 use chaos_engine::engine::ChaosEngine;
+use chaos_engine::log;
+use chaos_engine::logger::ChaosLogger;
 use chaos_engine::rendering::buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage};
 use chaos_engine::rendering::effect::ChaosEffect;
 use chaos_engine::rendering::effect_factory::{EffectFactory, EffectUsage};
@@ -160,6 +162,8 @@ enum KeyEvents {
 }
 
 fn main() {
+    log::set_max_level(log::LevelFilter::Debug);
+    log::set_logger(&ChaosLogger {}).unwrap();
     let mut engine = ChaosEngine::new("Asteroidish", 1024, 1024).unwrap();
     let shader_root = std::env::current_exe()
         .map_err(|_| "Failed to find current executable")

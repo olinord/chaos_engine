@@ -1,6 +1,7 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use chaos_communicator::communicator::ChaosReceiver;
+use log::debug;
 use vulkano::{
     Validated, ValidationError, VulkanError, VulkanLibrary,
     command_buffer::{
@@ -168,7 +169,7 @@ impl ChaosRenderSystem {
             Err(e) => panic!("failed to create device: {e}"),
         };
 
-        println!("Device created successfully");
+        debug!("Device created successfully");
         let queue = queues.next().unwrap();
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
