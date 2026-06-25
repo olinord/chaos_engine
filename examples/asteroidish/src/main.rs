@@ -33,6 +33,21 @@ struct TriangleRenderable {
     buffer: Option<ChaosBuffer>,
 }
 
+#[derive(BufferContents, Clone, Copy)]
+#[repr(C)]
+struct TriangleMvp {
+    projection: [[f32; 3]; 3],
+    view: [[f32; 3]; 3],
+}
+
+#[derive(BufferContents, Clone, Copy)]
+#[repr(C)]
+struct TrianglePushConstants {
+    model: [[f32; 3]; 3],
+}
+
+const IDENTITY_MAT3: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
 impl TriangleRenderable {
     fn new() -> Self {
         Self {
@@ -71,6 +86,18 @@ impl ChaosRenderableTrait for TriangleRenderable {
             return Err("boohoo");
         }
 
+        let mut effect = effect.unwrap();
+        effect
+            .set_uniform_data(
+                0,
+                0,
+                vec![TriangleMvp {
+                    projection: IDENTITY_MAT3,
+                    view: IDENTITY_MAT3,
+                }],
+            )
+            .map_err(|_| "Failed to set triangle MVP uniform data")?;
+
         let mut buffer = ChaosBuffer::new(
             "triangle-vertex-buffer".into(),
             ChaosBufferUsage::VertexBuffer,
@@ -81,7 +108,7 @@ impl ChaosRenderableTrait for TriangleRenderable {
             .set_data(vertices)
             .map_err(|_| "Failed to set triangle vertex buffer data")?;
 
-        self.effect = Some(effect.unwrap());
+        self.effect = Some(effect);
         self.buffer = Some(buffer);
 
         Ok(())
@@ -104,8 +131,18 @@ impl ChaosRenderableTrait for TriangleRenderable {
             .as_ref()
             .clone();
 
+        let effect = self.effect.as_ref().unwrap();
+
+        effect.bind_descriptor_sets(command_buffer)?;
+        effect.bind_push_constants(
+            command_buffer,
+            0,
+            TrianglePushConstants {
+                model: IDENTITY_MAT3,
+            },
+        )?;
         command_buffer
-            .bind_pipeline_graphics(self.effect.as_ref().unwrap().pipeline())?
+            .bind_pipeline_graphics(effect.pipeline())?
             .bind_vertex_buffers(0, buffer)?;
         unsafe {
             command_buffer.draw(3, 1, 0, 0)?;
