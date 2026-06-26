@@ -8,6 +8,7 @@ use chaos_engine::ecs::system::ChaosSystem;
 use chaos_engine::engine::ChaosEngine;
 use chaos_engine::log;
 use chaos_engine::logger::ChaosLogger;
+use chaos_engine::math::matrix::Mat4;
 use chaos_engine::rendering::buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage};
 use chaos_engine::rendering::effect::ChaosEffect;
 use chaos_engine::rendering::effect_factory::{EffectFactory, EffectUsage};
@@ -36,17 +37,15 @@ struct TriangleRenderable {
 #[derive(BufferContents, Clone, Copy)]
 #[repr(C)]
 struct TriangleMvp {
-    projection: [[f32; 3]; 3],
-    view: [[f32; 3]; 3],
+    projection: Mat4,
+    view: Mat4,
 }
 
 #[derive(BufferContents, Clone, Copy)]
 #[repr(C)]
 struct TrianglePushConstants {
-    model: [[f32; 3]; 3],
+    model: Mat4,
 }
-
-const IDENTITY_MAT3: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 impl TriangleRenderable {
     fn new() -> Self {
@@ -92,8 +91,12 @@ impl ChaosRenderableTrait for TriangleRenderable {
                 0,
                 0,
                 vec![TriangleMvp {
-                    projection: IDENTITY_MAT3,
-                    view: IDENTITY_MAT3,
+                    projection: Mat4::perspective(std::f32::consts::PI / 2.0, 1.0, 0.1, 20.0),
+                    view: Mat4::look_at(
+                        &[0.0, 0.0, 5.0].into(),
+                        &[0.0, 0.0, 0.0].into(),
+                        &[0.0, 1.0, 0.0].into(),
+                    ),
                 }],
             )
             .map_err(|_| "Failed to set triangle MVP uniform data")?;
@@ -193,7 +196,7 @@ impl ChaosSystem for TriangleSpawnSystem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum KeyEvents {
+enum MouseEvent {
     Space,
     Other,
 }
@@ -217,7 +220,7 @@ fn main() {
     let binding = ChaosBindingEvent::Held {
         button: ChaosButton::Keyboard(ChaosKeyCode::Space),
         duration: Duration::from_secs(1),
-        continue_after_matching: false,
+        continuous: false,
     };
 
     engine.device_event_system().bind(binding, KeyEvents::Space);
@@ -225,7 +228,7 @@ fn main() {
     let binding = ChaosBindingEvent::Held {
         button: ChaosButton::Keyboard(ChaosKeyCode::KeyM),
         duration: Duration::from_secs(1),
-        continue_after_matching: true,
+        continuous: true,
     };
 
     engine.device_event_system().bind(binding, KeyEvents::Other);

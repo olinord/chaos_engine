@@ -9,5 +9,6 @@ vulkano = {version = "0.35.2", default-features = true}
 vulkano-macros = "0.35.0"
 winit = "0.30.12"
 log = "0.4.11"
+paste = "1.0"
 spirv-reflect = "0.2.3"
 chaos_communicator={ git="https://github.com/olinord/chaos_communicator", rev="90e1e96"}
