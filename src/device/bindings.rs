@@ -18,7 +18,7 @@ pub enum ChaosBindingEvent {
     Held {
         button: ChaosButton,
         duration: Duration,
-        continue_after_matching: bool,
+        continuous: bool,
     },
     Chord {
         keys: Vec<ChaosButton>,

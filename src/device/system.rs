@@ -56,13 +56,13 @@ impl ChaosBindingContext {
         button: &ChaosButton,
         duration: Duration,
         now: Instant,
-        continue_after_matching: bool,
+        continuous: bool,
     ) -> bool {
         if !self.button_held_for_at(button, duration, now) {
             return false;
         }
 
-        if continue_after_matching {
+        if continuous {
             true
         } else {
             self.fired_held_bindings.insert((button.clone(), duration))
@@ -241,8 +241,8 @@ impl DeviceEventSystem {
             ChaosBindingEvent::Held {
                 button,
                 duration,
-                continue_after_matching,
-            } => context.held_binding_matches(button, *duration, now, *continue_after_matching),
+                continuous,
+            } => context.held_binding_matches(button, *duration, now, *continuous),
             ChaosBindingEvent::Chord { keys } => {
                 input_event.is_some() && context.chord_matches(keys)
             }
@@ -364,7 +364,7 @@ mod tests {
             ChaosBindingEvent::Held {
                 button: ChaosButton::Keyboard(KeyCode::Space),
                 duration: Duration::from_millis(10),
-                continue_after_matching: false,
+                continuous: false,
             },
             TestSignal::Fire,
         );
@@ -414,7 +414,7 @@ mod tests {
             ChaosBindingEvent::Held {
                 button: ChaosButton::Keyboard(KeyCode::Space),
                 duration: Duration::from_millis(10),
-                continue_after_matching: true,
+                continuous: true,
             },
             TestSignal::Fire,
         );
