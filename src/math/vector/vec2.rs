@@ -15,7 +15,7 @@ impl Vec2 {
     /// Returns the zero vector.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// assert_eq!(Vec2::zero(), Vec2 { x: 0.0, y: 0.0 });
     /// ```
@@ -26,7 +26,7 @@ impl Vec2 {
     /// Returns a vector with every component set to `1.0`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// assert_eq!(Vec2::one(), Vec2 { x: 1.0, y: 1.0 });
     /// ```
@@ -37,7 +37,7 @@ impl Vec2 {
     /// Returns the unit vector along the positive x axis.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// assert_eq!(Vec2::x_axis(), Vec2 { x: 1.0, y: 0.0 });
     /// ```
@@ -48,7 +48,7 @@ impl Vec2 {
     /// Returns the unit vector along the positive y axis.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// assert_eq!(Vec2::y_axis(), Vec2 { x: 0.0, y: 1.0 });
     /// ```
@@ -59,7 +59,7 @@ impl Vec2 {
     /// Returns a vector with every component set to `value`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// assert_eq!(Vec2::splat(2.5), Vec2 { x: 2.5, y: 2.5 });
     /// ```
@@ -71,7 +71,7 @@ impl Vec2 {
     /// Returns a normalized copy of `v`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let normalized = Vec2::normalized(&Vec2 { x: 3.0, y: 4.0 });
     /// assert!((normalized.length() - 1.0).abs() < 0.00001);
@@ -85,7 +85,7 @@ impl Vec2 {
     /// Returns the Euclidean distance between two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let distance = Vec2::distance(&Vec2::zero(), &Vec2 { x: 3.0, y: 4.0 });
     /// assert_eq!(distance, 5.0);
@@ -99,7 +99,7 @@ impl Vec2 {
     /// Returns the squared Euclidean distance between two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let distance_squared = Vec2::distance_squared(&Vec2::zero(), &Vec2 { x: 3.0, y: 4.0 });
     /// assert_eq!(distance_squared, 25.0);
@@ -113,7 +113,7 @@ impl Vec2 {
     /// Returns the dot product of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let dot = Vec2::dot(&Vec2 { x: 1.0, y: 2.0 }, &Vec2 { x: 3.0, y: 4.0 });
     /// assert_eq!(dot, 11.0);
@@ -125,7 +125,7 @@ impl Vec2 {
     /// Returns the scalar 2D cross product of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let cross = Vec2::cross(&Vec2::x_axis(), &Vec2::y_axis());
     /// assert_eq!(cross, 1.0);
@@ -137,7 +137,7 @@ impl Vec2 {
     /// Linearly interpolates from `one` to `other` by `t`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let result = Vec2::lerp(&Vec2::zero(), &Vec2 { x: 10.0, y: 20.0 }, 0.25);
     /// assert_eq!(result, Vec2 { x: 2.5, y: 5.0 });
@@ -152,7 +152,7 @@ impl Vec2 {
     /// Spherically interpolates from `one` to `other` by `t`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let result = Vec2::slerp(&Vec2::x_axis(), &Vec2::y_axis(), 0.5);
     /// assert!((result.x - 0.70710677).abs() < 0.00001);
@@ -179,7 +179,7 @@ impl Vec2 {
     /// Linearly interpolates from `one` to `other` by `t`, then normalizes the result.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let result = Vec2::nlerp(&Vec2::x_axis(), &Vec2::y_axis(), 0.5);
     /// assert!((result.length() - 1.0).abs() < 0.00001);
@@ -193,7 +193,7 @@ impl Vec2 {
     /// Returns the angle in radians between two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let angle = Vec2::angle(&Vec2::x_axis(), &Vec2::y_axis());
     /// assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 0.00001);
@@ -206,7 +206,7 @@ impl Vec2 {
     /// Reflects an incident vector around a normal vector.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let reflected = Vec2::reflect(&Vec2 { x: 1.0, y: -1.0 }, &Vec2::y_axis());
     /// assert_eq!(reflected, Vec2 { x: 1.0, y: 1.0 });
@@ -219,7 +219,7 @@ impl Vec2 {
     /// Projects vector `a` onto vector `b`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let projection = Vec2::project(&Vec2 { x: 2.0, y: 3.0 }, &Vec2::x_axis());
     /// assert_eq!(projection, Vec2 { x: 2.0, y: 0.0 });
@@ -237,7 +237,7 @@ impl Vec2 {
     /// Returns the component-wise minimum of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let result = Vec2::min(&Vec2 { x: 1.0, y: 4.0 }, &Vec2 { x: 2.0, y: 3.0 });
     /// assert_eq!(result, Vec2 { x: 1.0, y: 3.0 });
@@ -252,7 +252,7 @@ impl Vec2 {
     /// Returns the component-wise maximum of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let result = Vec2::max(&Vec2 { x: 1.0, y: 4.0 }, &Vec2 { x: 2.0, y: 3.0 });
     /// assert_eq!(result, Vec2 { x: 2.0, y: 4.0 });
@@ -267,7 +267,7 @@ impl Vec2 {
     /// Clamps each component of `value` between the corresponding `min` and `max` components.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let result = Vec2::clamp(&Vec2 { x: -1.0, y: 3.0 }, &Vec2::zero(), &Vec2::one());
     /// assert_eq!(result, Vec2 { x: 0.0, y: 1.0 });
@@ -283,24 +283,25 @@ impl Vec2 {
     /// Normalizes this vector in place if its length is non-zero.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let mut vector = Vec2 { x: 3.0, y: 4.0 };
     /// vector.normalize();
     /// assert!((vector.length() - 1.0).abs() < 0.00001);
     /// ```
     pub fn normalize(&mut self) {
-        let length = self.length();
+        let length = self.length_squared();
         if length != 0.0 {
-            self.x /= length;
-            self.y /= length;
+            let inv_length = 1.0 / length.sqrt();
+            self.x *= inv_length;
+            self.y *= inv_length;
         }
     }
 
     /// Reflects this vector in place around a normal vector.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let mut vector = Vec2 { x: 1.0, y: -1.0 };
     /// vector.reflected(&Vec2::y_axis());
@@ -315,7 +316,7 @@ impl Vec2 {
     /// Clamps this vector in place between the corresponding `min` and `max` components.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// let mut vector = Vec2 { x: -1.0, y: 3.0 };
     /// vector.clamped(&Vec2::zero(), &Vec2::one());
@@ -329,7 +330,7 @@ impl Vec2 {
     /// Returns this vector's Euclidean length.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// assert_eq!(Vec2 { x: 3.0, y: 4.0 }.length(), 5.0);
     /// ```
@@ -340,7 +341,7 @@ impl Vec2 {
     /// Returns this vector's squared Euclidean length.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec2;
+    /// use chaos_engine::math::Vec2;
     ///
     /// assert_eq!(Vec2 { x: 3.0, y: 4.0 }.length_squared(), 25.0);
     /// ```

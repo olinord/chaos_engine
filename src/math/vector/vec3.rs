@@ -17,7 +17,7 @@ impl Vec3 {
     /// Returns the zero vector.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// assert_eq!(Vec3::zero(), Vec3 { x: 0.0, y: 0.0, z: 0.0 });
     /// ```
@@ -32,7 +32,7 @@ impl Vec3 {
     /// Returns a vector with every component set to `1.0`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// assert_eq!(Vec3::one(), Vec3 { x: 1.0, y: 1.0, z: 1.0 });
     /// ```
@@ -47,7 +47,7 @@ impl Vec3 {
     /// Returns the unit vector along the positive x axis.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// assert_eq!(Vec3::x_axis(), Vec3 { x: 1.0, y: 0.0, z: 0.0 });
     /// ```
@@ -62,7 +62,7 @@ impl Vec3 {
     /// Returns the unit vector along the positive y axis.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// assert_eq!(Vec3::y_axis(), Vec3 { x: 0.0, y: 1.0, z: 0.0 });
     /// ```
@@ -77,7 +77,7 @@ impl Vec3 {
     /// Returns the unit vector along the positive z axis.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// assert_eq!(Vec3::z_axis(), Vec3 { x: 0.0, y: 0.0, z: 1.0 });
     /// ```
@@ -92,7 +92,7 @@ impl Vec3 {
     /// Returns a vector with every component set to `value`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// assert_eq!(Vec3::splat(2.5), Vec3 { x: 2.5, y: 2.5, z: 2.5 });
     /// ```
@@ -108,7 +108,7 @@ impl Vec3 {
     /// Returns a normalized copy of `v`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let normalized = Vec3::normalized(&Vec3 { x: 0.0, y: 3.0, z: 4.0 });
     /// assert!((normalized.length() - 1.0).abs() < 0.00001);
@@ -122,7 +122,7 @@ impl Vec3 {
     /// Returns the Euclidean distance between two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let distance = Vec3::distance(&Vec3::zero(), &Vec3 { x: 0.0, y: 3.0, z: 4.0 });
     /// assert_eq!(distance, 5.0);
@@ -137,7 +137,7 @@ impl Vec3 {
     /// Returns the squared Euclidean distance between two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let distance_squared = Vec3::distance_squared(&Vec3::zero(), &Vec3 { x: 0.0, y: 3.0, z: 4.0 });
     /// assert_eq!(distance_squared, 25.0);
@@ -152,7 +152,7 @@ impl Vec3 {
     /// Returns the dot product of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let dot = Vec3::dot(&Vec3 { x: 1.0, y: 2.0, z: 3.0 }, &Vec3 { x: 4.0, y: 5.0, z: 6.0 });
     /// assert_eq!(dot, 32.0);
@@ -164,7 +164,7 @@ impl Vec3 {
     /// Returns the 3D cross product of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let cross = Vec3::cross(&Vec3::x_axis(), &Vec3::y_axis());
     /// assert_eq!(cross, Vec3::z_axis());
@@ -180,7 +180,7 @@ impl Vec3 {
     /// Linearly interpolates from `one` to `other` by `t`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let result = Vec3::lerp(&Vec3::zero(), &Vec3 { x: 10.0, y: 20.0, z: 30.0 }, 0.25);
     /// assert_eq!(result, Vec3 { x: 2.5, y: 5.0, z: 7.5 });
@@ -196,7 +196,7 @@ impl Vec3 {
     /// Spherically interpolates from `one` to `other` by `t`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let result = Vec3::slerp(&Vec3::x_axis(), &Vec3::y_axis(), 0.5);
     /// assert!((result.x - 0.70710677).abs() < 0.00001);
@@ -225,7 +225,7 @@ impl Vec3 {
     /// Linearly interpolates from `one` to `other` by `t`, then normalizes the result.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let result = Vec3::nlerp(&Vec3::x_axis(), &Vec3::y_axis(), 0.5);
     /// assert!((result.length() - 1.0).abs() < 0.00001);
@@ -239,7 +239,7 @@ impl Vec3 {
     /// Returns the angle in radians between two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let angle = Vec3::angle(&Vec3::x_axis(), &Vec3::y_axis());
     /// assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 0.00001);
@@ -252,7 +252,7 @@ impl Vec3 {
     /// Reflects an incident vector around a normal vector.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let reflected = Vec3::reflect(&Vec3 { x: 1.0, y: -1.0, z: 2.0 }, &Vec3::y_axis());
     /// assert_eq!(reflected, Vec3 { x: 1.0, y: 1.0, z: 2.0 });
@@ -265,7 +265,7 @@ impl Vec3 {
     /// Projects vector `a` onto vector `b`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let projection = Vec3::project(&Vec3 { x: 2.0, y: 3.0, z: 4.0 }, &Vec3::z_axis());
     /// assert_eq!(projection, Vec3 { x: 0.0, y: 0.0, z: 4.0 });
@@ -283,7 +283,7 @@ impl Vec3 {
     /// Returns the component-wise minimum of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let result = Vec3::min(&Vec3 { x: 1.0, y: 4.0, z: 2.0 }, &Vec3 { x: 2.0, y: 3.0, z: 5.0 });
     /// assert_eq!(result, Vec3 { x: 1.0, y: 3.0, z: 2.0 });
@@ -299,7 +299,7 @@ impl Vec3 {
     /// Returns the component-wise maximum of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let result = Vec3::max(&Vec3 { x: 1.0, y: 4.0, z: 2.0 }, &Vec3 { x: 2.0, y: 3.0, z: 5.0 });
     /// assert_eq!(result, Vec3 { x: 2.0, y: 4.0, z: 5.0 });
@@ -315,7 +315,7 @@ impl Vec3 {
     /// Clamps each component of `value` between the corresponding `min` and `max` components.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let result = Vec3::clamp(&Vec3 { x: -1.0, y: 0.5, z: 3.0 }, &Vec3::zero(), &Vec3::one());
     /// assert_eq!(result, Vec3 { x: 0.0, y: 0.5, z: 1.0 });
@@ -332,25 +332,26 @@ impl Vec3 {
     /// Normalizes this vector in place if its length is non-zero.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let mut vector = Vec3 { x: 0.0, y: 3.0, z: 4.0 };
     /// vector.normalize();
     /// assert!((vector.length() - 1.0).abs() < 0.00001);
     /// ```
     pub fn normalize(&mut self) {
-        let length = self.length();
+        let length = self.length_squared();
         if length != 0.0 {
-            self.x /= length;
-            self.y /= length;
-            self.z /= length;
+            let inv_length = 1.0 / length.sqrt();
+            self.x *= inv_length;
+            self.y *= inv_length;
+            self.z *= inv_length;
         }
     }
 
     /// Reflects this vector in place around a normal vector.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let mut vector = Vec3 { x: 1.0, y: -1.0, z: 2.0 };
     /// vector.reflected(&Vec3::y_axis());
@@ -365,7 +366,7 @@ impl Vec3 {
     /// Clamps this vector in place between the corresponding `min` and `max` components.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// let mut vector = Vec3 { x: -1.0, y: 0.5, z: 3.0 };
     /// vector.clamped(&Vec3::zero(), &Vec3::one());
@@ -380,7 +381,7 @@ impl Vec3 {
     /// Returns this vector's Euclidean length.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// assert_eq!(Vec3 { x: 0.0, y: 3.0, z: 4.0 }.length(), 5.0);
     /// ```
@@ -391,7 +392,7 @@ impl Vec3 {
     /// Returns this vector's squared Euclidean length.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec3;
+    /// use chaos_engine::math::Vec3;
     ///
     /// assert_eq!(Vec3 { x: 0.0, y: 3.0, z: 4.0 }.length_squared(), 25.0);
     /// ```

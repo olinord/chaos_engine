@@ -18,7 +18,7 @@ impl Vec4 {
     /// Returns the zero vector.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// assert_eq!(Vec4::zero(), Vec4 { x: 0.0, y: 0.0, z: 0.0, w: 0.0 });
     /// ```
@@ -34,7 +34,7 @@ impl Vec4 {
     /// Returns a vector with every component set to `1.0`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// assert_eq!(Vec4::one(), Vec4 { x: 1.0, y: 1.0, z: 1.0, w: 1.0 });
     /// ```
@@ -50,7 +50,7 @@ impl Vec4 {
     /// Returns the unit vector along the positive x axis.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// assert_eq!(Vec4::x_axis(), Vec4 { x: 1.0, y: 0.0, z: 0.0, w: 0.0 });
     /// ```
@@ -66,7 +66,7 @@ impl Vec4 {
     /// Returns the unit vector along the positive y axis.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// assert_eq!(Vec4::y_axis(), Vec4 { x: 0.0, y: 1.0, z: 0.0, w: 0.0 });
     /// ```
@@ -82,7 +82,7 @@ impl Vec4 {
     /// Returns the unit vector along the positive z axis.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// assert_eq!(Vec4::z_axis(), Vec4 { x: 0.0, y: 0.0, z: 1.0, w: 0.0 });
     /// ```
@@ -98,7 +98,7 @@ impl Vec4 {
     /// Returns the unit vector along the positive w axis.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// assert_eq!(Vec4::w_axis(), Vec4 { x: 0.0, y: 0.0, z: 0.0, w: 1.0 });
     /// ```
@@ -114,7 +114,7 @@ impl Vec4 {
     /// Returns a vector with every component set to `value`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// assert_eq!(Vec4::splat(2.5), Vec4 { x: 2.5, y: 2.5, z: 2.5, w: 2.5 });
     /// ```
@@ -131,7 +131,7 @@ impl Vec4 {
     /// Returns a normalized copy of `v`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let normalized = Vec4::normalized(&Vec4 { x: 0.0, y: 0.0, z: 3.0, w: 4.0 });
     /// assert!((normalized.length() - 1.0).abs() < 0.00001);
@@ -145,7 +145,7 @@ impl Vec4 {
     /// Returns the Euclidean distance between two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let distance = Vec4::distance(&Vec4::zero(), &Vec4 { x: 0.0, y: 0.0, z: 3.0, w: 4.0 });
     /// assert_eq!(distance, 5.0);
@@ -161,7 +161,7 @@ impl Vec4 {
     /// Returns the squared Euclidean distance between two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let distance_squared = Vec4::distance_squared(&Vec4::zero(), &Vec4 { x: 0.0, y: 0.0, z: 3.0, w: 4.0 });
     /// assert_eq!(distance_squared, 25.0);
@@ -177,7 +177,7 @@ impl Vec4 {
     /// Returns the dot product of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let dot = Vec4::dot(&Vec4 { x: 1.0, y: 2.0, z: 3.0, w: 4.0 }, &Vec4 { x: 5.0, y: 6.0, z: 7.0, w: 8.0 });
     /// assert_eq!(dot, 70.0);
@@ -189,7 +189,7 @@ impl Vec4 {
     /// Returns the 4D cross product perpendicular to three input vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let cross = Vec4::cross(&Vec4::x_axis(), &Vec4::y_axis(), &Vec4::z_axis());
     /// assert_eq!(cross, Vec4 { x: 0.0, y: -0.0, z: 0.0, w: -1.0 });
@@ -217,7 +217,7 @@ impl Vec4 {
     /// Linearly interpolates from `one` to `other` by `t`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let result = Vec4::lerp(&Vec4::zero(), &Vec4 { x: 10.0, y: 20.0, z: 30.0, w: 40.0 }, 0.25);
     /// assert_eq!(result, Vec4 { x: 2.5, y: 5.0, z: 7.5, w: 10.0 });
@@ -234,7 +234,7 @@ impl Vec4 {
     /// Spherically interpolates from `one` to `other` by `t`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let result = Vec4::slerp(&Vec4::x_axis(), &Vec4::y_axis(), 0.5);
     /// assert!((result.x - 0.70710677).abs() < 0.00001);
@@ -265,7 +265,7 @@ impl Vec4 {
     /// Linearly interpolates from `one` to `other` by `t`, then normalizes the result.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let result = Vec4::nlerp(&Vec4::x_axis(), &Vec4::y_axis(), 0.5);
     /// assert!((result.length() - 1.0).abs() < 0.00001);
@@ -279,7 +279,7 @@ impl Vec4 {
     /// Returns the angle in radians between two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let angle = Vec4::angle(&Vec4::x_axis(), &Vec4::y_axis());
     /// assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 0.00001);
@@ -292,7 +292,7 @@ impl Vec4 {
     /// Reflects an incident vector around a normal vector.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let reflected = Vec4::reflect(&Vec4 { x: 1.0, y: -1.0, z: 2.0, w: 3.0 }, &Vec4::y_axis());
     /// assert_eq!(reflected, Vec4 { x: 1.0, y: 1.0, z: 2.0, w: 3.0 });
@@ -305,7 +305,7 @@ impl Vec4 {
     /// Projects vector `a` onto vector `b`.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let projection = Vec4::project(&Vec4 { x: 2.0, y: 3.0, z: 4.0, w: 5.0 }, &Vec4::w_axis());
     /// assert_eq!(projection, Vec4 { x: 0.0, y: 0.0, z: 0.0, w: 5.0 });
@@ -323,7 +323,7 @@ impl Vec4 {
     /// Returns the component-wise minimum of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let result = Vec4::min(&Vec4 { x: 1.0, y: 4.0, z: 2.0, w: 8.0 }, &Vec4 { x: 2.0, y: 3.0, z: 5.0, w: 7.0 });
     /// assert_eq!(result, Vec4 { x: 1.0, y: 3.0, z: 2.0, w: 7.0 });
@@ -340,7 +340,7 @@ impl Vec4 {
     /// Returns the component-wise maximum of two vectors.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let result = Vec4::max(&Vec4 { x: 1.0, y: 4.0, z: 2.0, w: 8.0 }, &Vec4 { x: 2.0, y: 3.0, z: 5.0, w: 7.0 });
     /// assert_eq!(result, Vec4 { x: 2.0, y: 4.0, z: 5.0, w: 8.0 });
@@ -357,7 +357,7 @@ impl Vec4 {
     /// Clamps each component of `value` between the corresponding `min` and `max` components.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let result = Vec4::clamp(&Vec4 { x: -1.0, y: 0.5, z: 3.0, w: 0.25 }, &Vec4::zero(), &Vec4::one());
     /// assert_eq!(result, Vec4 { x: 0.0, y: 0.5, z: 1.0, w: 0.25 });
@@ -375,26 +375,27 @@ impl Vec4 {
     /// Normalizes this vector in place if its length is non-zero.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let mut vector = Vec4 { x: 0.0, y: 0.0, z: 3.0, w: 4.0 };
     /// vector.normalize();
     /// assert!((vector.length() - 1.0).abs() < 0.00001);
     /// ```
     pub fn normalize(&mut self) {
-        let length = self.length();
+        let length = self.length_squared();
         if length != 0.0 {
-            self.x /= length;
-            self.y /= length;
-            self.z /= length;
-            self.w /= length;
+            let inv_length = 1.0 / length.sqrt();
+            self.x *= inv_length;
+            self.y *= inv_length;
+            self.z *= inv_length;
+            self.w *= inv_length;
         }
     }
 
     /// Reflects this vector in place around a normal vector.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let mut vector = Vec4 { x: 1.0, y: -1.0, z: 2.0, w: 3.0 };
     /// vector.reflected(&Vec4::y_axis());
@@ -409,7 +410,7 @@ impl Vec4 {
     /// Clamps this vector in place between the corresponding `min` and `max` components.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// let mut vector = Vec4 { x: -1.0, y: 0.5, z: 3.0, w: 0.25 };
     /// vector.clamped(&Vec4::zero(), &Vec4::one());
@@ -425,7 +426,7 @@ impl Vec4 {
     /// Returns this vector's Euclidean length.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// assert_eq!(Vec4 { x: 0.0, y: 0.0, z: 3.0, w: 4.0 }.length(), 5.0);
     /// ```
@@ -436,25 +437,12 @@ impl Vec4 {
     /// Returns this vector's squared Euclidean length.
     ///
     /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
+    /// use chaos_engine::math::Vec4;
     ///
     /// assert_eq!(Vec4 { x: 0.0, y: 0.0, z: 3.0, w: 4.0 }.length_squared(), 25.0);
     /// ```
     pub fn length_squared(&self) -> f32 {
         self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w
-    }
-
-    /// Returns this vector's squared Euclidean length.
-    ///
-    /// This misspelled alias is kept for compatibility with older callers.
-    ///
-    /// ```rust
-    /// use chaos_engine::math::vector::Vec4;
-    ///
-    /// assert_eq!(Vec4 { x: 0.0, y: 0.0, z: 3.0, w: 4.0 }.length_sqared(), 25.0);
-    /// ```
-    pub fn length_sqared(&self) -> f32 {
-        self.length_squared()
     }
 
     // swizzling methods
@@ -876,7 +864,6 @@ mod tests {
 
         assert_eq!(vector.length(), 5.0);
         assert_eq!(vector.length_squared(), 25.0);
-        assert_eq!(vector.length_sqared(), 25.0);
         assert_eq!(Vec4::distance(&Vec4::zero(), &vector), 5.0);
         assert_eq!(Vec4::distance_squared(&Vec4::zero(), &vector), 25.0);
         assert_eq!(
