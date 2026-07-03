@@ -92,7 +92,7 @@ impl ChaosRenderableTrait for ShipRenderable {
                 vec![TriangleMvp {
                     projection: Mat4::perspective(std::f32::consts::PI / 2.0, 1.0, 0.1, 20.0),
                     view: Mat4::look_at(
-                        &[0.0, 0.0, 5.0].into(),
+                        &[0.0, 0.0, -5.0].into(),
                         &[0.0, 0.0, 0.0].into(),
                         &[0.0, 1.0, 0.0].into(),
                     ),

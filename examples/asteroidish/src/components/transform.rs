@@ -20,6 +20,6 @@ impl TransformComponent {
         let rotation_matrix = Mat4::rotation_z(self.rotation);
         let scale_matrix = Mat4::scale(self.scale.x, self.scale.y, 1.0);
 
-        translation_matrix * rotation_matrix * scale_matrix
+        scale_matrix * rotation_matrix * translation_matrix
     }
 }

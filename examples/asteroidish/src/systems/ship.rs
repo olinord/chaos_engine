@@ -1,7 +1,7 @@
 use chaos_engine::{
     ChaosReceiver,
     ecs::{EntityID, system::ChaosSystem, world::ChaosWorld},
-    math::Vec2,
+    math::{Vec2, matrix::Mat3},
     rendering::rendering_system::ChaosRenderableContainer,
 };
 
@@ -14,6 +14,7 @@ use crate::renderables::ship::ShipRenderable;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShipEvent {
     Thrust,
+    Break,
     Fire,
     RotateLeft,
     RotateRight,
@@ -21,6 +22,7 @@ pub enum ShipEvent {
 
 pub struct ShipSystem {
     thrust_receiver: Option<ChaosReceiver>,
+    break_receiver: Option<ChaosReceiver>,
     fire_receiver: Option<ChaosReceiver>,
     rotate_left_receiver: Option<ChaosReceiver>,
     rotate_right_receiver: Option<ChaosReceiver>,
@@ -31,6 +33,7 @@ impl ShipSystem {
     pub fn new() -> Self {
         Self {
             thrust_receiver: None,
+            break_receiver: None,
             fire_receiver: None,
             rotate_left_receiver: None,
             rotate_right_receiver: None,
@@ -44,11 +47,33 @@ impl ShipSystem {
             None => false,
         }
     }
+
+    fn is_rotating_right(&mut self) -> bool {
+        match self.rotate_right_receiver.as_mut() {
+            Some(receiver) => receiver.receive().is_some(),
+            None => false,
+        }
+    }
+
+    fn is_thrusting(&mut self) -> bool {
+        match self.thrust_receiver.as_mut() {
+            Some(receiver) => receiver.receive().is_some(),
+            None => false,
+        }
+    }
+
+    fn is_breaking(&mut self) -> bool {
+        match self.break_receiver.as_mut() {
+            Some(receiver) => receiver.receive().is_some(),
+            None => false,
+        }
+    }
 }
 
 impl ChaosSystem for ShipSystem {
     fn initialize(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str> {
         self.thrust_receiver = Some(world.register_for_trigger(ShipEvent::Thrust));
+        self.break_receiver = Some(world.register_for_trigger(ShipEvent::Break));
         self.fire_receiver = Some(world.register_for_trigger(ShipEvent::Fire));
         self.rotate_left_receiver = Some(world.register_for_trigger(ShipEvent::RotateLeft));
         self.rotate_right_receiver = Some(world.register_for_trigger(ShipEvent::RotateRight));
@@ -69,14 +94,36 @@ impl ChaosSystem for ShipSystem {
 
     fn update(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str> {
         let delta_time = world.get_time().delta_time();
-        let transform_component =
-            match world.get_component_mut::<TransformComponent>(self.ship_entity.unwrap()) {
-                Some(component) => component,
-                None => return Err("Failed to get transform component for ship entity")?,
-            };
+        let query = world.query_for_entity::<(&mut TransformComponent, &mut VelocityComponent)>(
+            self.ship_entity.unwrap(),
+        );
+
+        if (query.is_none()) {
+            return Err("Failed to query ship components");
+        }
+
+        let mut components = query.unwrap();
+        let transform_component = components.0;
+        let velocity_component = components.1;
 
         if self.is_rotating_left() {
-            transform_component.rotation -= 1.0 * delta_time; // Rotate left 
+            transform_component.rotation -= 2.0 * delta_time; // Rotate left 
+        }
+        if self.is_rotating_right() {
+            transform_component.rotation += 2.0 * delta_time; // Rotate right
+        }
+
+        if self.is_thrusting() {
+            let thrust_amount = 1.0;
+            let thrust =
+                Mat3::rotation(transform_component.rotation) * Vec2::new(0.0, -1.0) * thrust_amount;
+            velocity_component.velocity += thrust * delta_time; // Apply thrust
+        }
+        if self.is_breaking() {
+            let break_amount = -0.5;
+            let thrust =
+                Mat3::rotation(transform_component.rotation) * Vec2::new(0.0, -1.0) * break_amount;
+            velocity_component.velocity += thrust * delta_time; // Apply break
         }
         Ok(())
     }

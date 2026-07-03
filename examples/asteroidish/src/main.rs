@@ -25,15 +25,42 @@ fn main() {
 
     engine.add_directory(PathBuf::from("shaders"), shader_root);
 
-    let binding = ChaosBindingEvent::Held {
-        button: ChaosButton::Keyboard(ChaosKeyCode::KeyW),
-        duration: std::time::Duration::from_millis(100),
-        continuous: true,
-    };
+    let forward_event = ChaosBindingEvent::keyboard_key_held(
+        ChaosKeyCode::KeyW,
+        std::time::Duration::from_millis(100),
+        true,
+    );
+
+    let break_event = ChaosBindingEvent::keyboard_key_held(
+        ChaosKeyCode::KeyS,
+        std::time::Duration::from_millis(100),
+        true,
+    );
+
+    let rotate_left_event = ChaosBindingEvent::keyboard_key_held(
+        ChaosKeyCode::KeyA,
+        std::time::Duration::from_millis(100),
+        true,
+    );
+
+    let rotate_right_event = ChaosBindingEvent::keyboard_key_held(
+        ChaosKeyCode::KeyD,
+        std::time::Duration::from_millis(100),
+        true,
+    );
 
     engine
         .device_event_system()
-        .bind(binding, ShipEvent::RotateLeft);
+        .bind(rotate_left_event, ShipEvent::RotateLeft);
+    engine
+        .device_event_system()
+        .bind(rotate_right_event, ShipEvent::RotateRight);
+    engine
+        .device_event_system()
+        .bind(forward_event, ShipEvent::Thrust);
+    engine
+        .device_event_system()
+        .bind(break_event, ShipEvent::Break);
     engine
         .world_mut()
         .add_system(systems::transform::TransformSystem::new())
