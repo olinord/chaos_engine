@@ -282,6 +282,19 @@ impl ChaosComponentManager {
         Ok(QueryIter::new(entity_ids, stores))
     }
 
+    pub fn query_for_entity<'world, Q>(&'world mut self, entity_id: EntityID) -> Option<Q::Item>
+    where
+        Q: QueryTuple<'world>,
+    {
+        let accesses = Q::accesses();
+        if validate_query_accesses(&accesses).is_err() {
+            return None;
+        }
+        let stores = self.borrow_query_stores(&accesses);
+
+        Q::fetch(&stores, entity_id)
+    }
+
     pub fn for_each<'world, Q, F>(&'world mut self, mut f: F) -> Result<(), QueryError>
     where
         Q: QueryTuple<'world>,

@@ -50,6 +50,16 @@ pub enum ChaosDeviceEventMatcher {
     MouseExited,
 }
 
+impl ChaosButton {
+    pub fn mouse_button(button: ChaosMouseButton) -> Self {
+        ChaosButton::Mouse(button)
+    }
+
+    pub fn keyboard_key(key: ChaosKeyCode) -> Self {
+        ChaosButton::Keyboard(key)
+    }
+}
+
 impl ChaosBindingEvent {
     pub fn matches(&self, context: &ChaosBindingContext, event: &WindowEvent) -> bool {
         self.matches_at(context, event, Instant::now())
@@ -73,6 +83,42 @@ impl ChaosBindingEvent {
             } => context.button_held_for_at(button, *duration, now),
             ChaosBindingEvent::Chord { keys } => context.chord_matches(keys),
         }
+    }
+
+    pub fn input(input_event: ChaosInputEventMatcher) -> Self {
+        ChaosBindingEvent::Input(input_event)
+    }
+
+    pub fn device(device_event: ChaosDeviceEventMatcher) -> Self {
+        ChaosBindingEvent::Device(device_event)
+    }
+
+    pub fn sequence(events: Vec<ChaosInputEventMatcher>, within: Duration) -> Self {
+        ChaosBindingEvent::Sequence { events, within }
+    }
+
+    pub fn mouse_button_held(
+        button: ChaosMouseButton,
+        duration: Duration,
+        continuous: bool,
+    ) -> Self {
+        ChaosBindingEvent::Held {
+            button: ChaosButton::Mouse(button),
+            duration,
+            continuous,
+        }
+    }
+
+    pub fn keyboard_key_held(key: ChaosKeyCode, duration: Duration, continuous: bool) -> Self {
+        ChaosBindingEvent::Held {
+            button: ChaosButton::Keyboard(key),
+            duration,
+            continuous,
+        }
+    }
+
+    pub fn chord(keys: Vec<ChaosButton>) -> Self {
+        ChaosBindingEvent::Chord { keys }
     }
 }
 

@@ -185,6 +185,13 @@ impl ChaosWorld {
         self.component_manager.query::<Q>()
     }
 
+    pub fn query_for_entity<'world, Q>(&'world mut self, entity_id: EntityID) -> Option<Q::Item>
+    where
+        Q: QueryTuple<'world>,
+    {
+        self.component_manager.query_for_entity::<Q>(entity_id)
+    }
+
     pub fn for_each<'world, Q, F>(&'world mut self, f: F) -> Result<(), QueryError>
     where
         Q: QueryTuple<'world>,

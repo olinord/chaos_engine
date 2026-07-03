@@ -2,7 +2,7 @@ use std::ops::{Mul, MulAssign};
 
 use vulkano::buffer::BufferContents;
 
-use crate::math::{Vec3, quaternion::Quaternion};
+use crate::math::{Vec2, Vec3, quaternion::Quaternion};
 
 #[derive(Debug, Clone, Copy, PartialEq, BufferContents)]
 #[repr(C)]
@@ -143,6 +143,24 @@ impl Mul<Mat3> for Mat3 {
 impl MulAssign<Mat3> for Mat3 {
     fn mul_assign(&mut self, other: Mat3) {
         *self = *self * other;
+    }
+}
+
+impl Mul<Vec2> for Mat3 {
+    type Output = Vec2;
+
+    fn mul(self, vec: Vec2) -> Self::Output {
+        let x = self.data[0][0] * vec.x + self.data[1][0] * vec.y + self.data[2][0];
+        let y = self.data[0][1] * vec.x + self.data[1][1] * vec.y + self.data[2][1];
+        Vec2 { x, y }
+    }
+}
+
+impl MulAssign<Vec2> for Mat3 {
+    fn mul_assign(&mut self, vec: Vec2) {
+        let result = *self * vec;
+        self.data[2][0] = result.x;
+        self.data[2][1] = result.y;
     }
 }
 
