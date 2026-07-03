@@ -14,6 +14,18 @@ pub struct Vec3 {
 }
 
 impl Vec3 {
+    /// Creates a new `Vec3` with the given `x`, `y`, and `z` components.
+    ///
+    /// ```rust
+    /// use chaos_engine::math::Vec3;
+    ///
+    /// let v = Vec3::new(1.0, 2.0, 3.0);
+    /// assert_eq!(v, Vec3 { x: 1.0, y: 2.0, z: 3.0 });
+    /// ```
+    pub const fn new(x: f32, y: f32, z: f32) -> Self {
+        Self { x, y, z }
+    }
+
     /// Returns the zero vector.
     ///
     /// ```rust

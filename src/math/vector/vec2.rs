@@ -12,6 +12,18 @@ pub struct Vec2 {
 }
 
 impl Vec2 {
+    /// Creates a new `Vec2` with the given `x` and `y` components.
+    ///
+    /// ```rust
+    /// use chaos_engine::math::Vec2;
+    ///
+    /// let v = Vec2::new(1.0, 2.0);
+    /// assert_eq!(v, Vec2 { x: 1.0, y: 2.0 });
+    /// ```
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
     /// Returns the zero vector.
     ///
     /// ```rust

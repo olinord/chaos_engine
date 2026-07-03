@@ -46,7 +46,7 @@ mod tests {
         let entity_id = world.spawn().with(TestComponent { value: 42 }).build();
 
         let component = world.get_component::<TestComponent>(entity_id);
-        assert!(component.is_ok());
+        assert!(component.is_some());
         assert_eq!(component.unwrap().value, 42);
     }
 }

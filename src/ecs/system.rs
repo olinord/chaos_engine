@@ -1,16 +1,9 @@
 use std::any::Any;
 
-use crate::ecs::component::ChaosComponentManager;
+use crate::ecs::world::ChaosWorld;
 
 pub trait ChaosSystem: Any {
-    fn initialize(
-        &mut self,
-        component_manager: &mut ChaosComponentManager,
-    ) -> Result<(), &'static str>;
+    fn initialize(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str>;
 
-    fn update(
-        &mut self,
-        delta_time: f32,
-        component_manager: &mut ChaosComponentManager,
-    ) -> Result<(), &'static str>;
+    fn update(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str>;
 }

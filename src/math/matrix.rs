@@ -122,6 +122,30 @@ impl From<[[f32; 3]; 3]> for Mat3 {
     }
 }
 
+impl Mul<Mat3> for Mat3 {
+    type Output = Self;
+
+    fn mul(self, other: Mat3) -> Self::Output {
+        let mut result = Mat3::zero();
+
+        for i in 0..Self::ROWS {
+            for j in 0..Self::COLS {
+                for k in 0..Self::COLS {
+                    result.data[i][j] += self.data[i][k] * other.data[k][j];
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl MulAssign<Mat3> for Mat3 {
+    fn mul_assign(&mut self, other: Mat3) {
+        *self = *self * other;
+    }
+}
+
 impl Mat4 {
     const ROWS: usize = 4;
     const COLS: usize = 4;
@@ -388,5 +412,63 @@ impl Mul<Mat4> for Mat4 {
 impl MulAssign<Mat4> for Mat4 {
     fn mul_assign(&mut self, other: Mat4) {
         *self = *self * other;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transform_point(point: [f32; 4], matrix: &Mat4) -> [f32; 4] {
+        let mut result = [0.0; 4];
+        for column in 0..4 {
+            for row in 0..4 {
+                result[column] += point[row] * matrix.data[row][column];
+            }
+        }
+        result
+    }
+
+    fn assert_inside_clip_space(point: [f32; 4]) {
+        let ndc = [
+            point[0] / point[3],
+            point[1] / point[3],
+            point[2] / point[3],
+        ];
+        assert!(
+            (-1.0..=1.0).contains(&ndc[0]),
+            "x outside clip space: {}",
+            ndc[0]
+        );
+        assert!(
+            (-1.0..=1.0).contains(&ndc[1]),
+            "y outside clip space: {}",
+            ndc[1]
+        );
+        assert!(
+            (0.0..=1.0).contains(&ndc[2]),
+            "z outside Vulkan clip space: {}",
+            ndc[2]
+        );
+    }
+
+    #[test]
+    fn perspective_look_at_keeps_asteroidish_triangle_inside_clip_space() {
+        let projection = Mat4::perspective(std::f32::consts::PI / 2.0, 1.0, 0.1, 20.0);
+        let view = Mat4::look_at(
+            &[0.0, 0.0, 5.0].into(),
+            &[0.0, 0.0, 0.0].into(),
+            &[0.0, 1.0, 0.0].into(),
+        );
+
+        for vertex in [
+            [0.0, -0.5, 0.0, 1.0],
+            [0.5, 0.5, 0.0, 1.0],
+            [-0.5, 0.5, 0.0, 1.0],
+        ] {
+            let view_space = transform_point(vertex, &view);
+            let clip_space = transform_point(view_space, &projection);
+            assert_inside_clip_space(clip_space);
+        }
     }
 }

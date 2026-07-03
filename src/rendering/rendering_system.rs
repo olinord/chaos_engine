@@ -29,7 +29,7 @@ use vulkano::{
 use winit::{raw_window_handle::DisplayHandle, window::Window};
 
 use crate::{
-    ecs::world::ChaosWorld,
+    ecs::{EntityID, world::ChaosWorld},
     rendering::{adapters::select_physical_device, swapchain::get_swapchain_and_backbuffers},
 };
 
@@ -87,12 +87,13 @@ pub struct ChaosRenderSystem {
 }
 
 pub trait ChaosRenderableTrait {
+    fn initialize(&mut self, render_context: &Arc<ChaosRenderContext>) -> Result<(), &'static str>;
     fn add_to_command_buffer(
         &self,
         command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        world: &ChaosWorld,
+        entity: &EntityID,
     ) -> Result<(), Box<ValidationError>>;
-
-    fn initialize(&mut self, render_context: &Arc<ChaosRenderContext>) -> Result<(), &'static str>;
 }
 
 pub struct ChaosRenderableContainer {
@@ -280,11 +281,15 @@ impl ChaosRenderSystem {
 
     pub fn render(
         &self,
-        container: Vec<&ChaosRenderableContainer>,
+        container: Vec<(EntityID, &ChaosRenderableContainer)>,
         buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        world: &ChaosWorld,
     ) {
-        for renderable in container {
-            match renderable.renderable.add_to_command_buffer(buffer_builder) {
+        for (entity, renderable) in container {
+            match renderable
+                .renderable
+                .add_to_command_buffer(buffer_builder, world, &entity)
+            {
                 Ok(()) => {}
                 Err(e) => {
                     println!("Failed to add to command buffer: {e}");
@@ -356,9 +361,8 @@ impl ChaosRenderSystem {
             let entity_id = message.get("entity_id").unwrap();
             added_entity_ids.push(entity_id);
         }
-
         for entity_id in added_entity_ids {
-            if let Ok(entity) = world.get_component_mut::<ChaosRenderableContainer>(entity_id) {
+            if let Some(entity) = world.get_component_mut::<ChaosRenderableContainer>(entity_id) {
                 if let Some(renderable) = Arc::get_mut(&mut entity.renderable) {
                     match renderable.initialize(&self.render_context.clone()) {
                         Ok(()) => {}

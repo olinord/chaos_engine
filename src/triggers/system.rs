@@ -1,4 +1,4 @@
-use crate::ecs::system::ChaosSystem;
+use crate::ecs::{system::ChaosSystem, world::ChaosWorld};
 use crate::triggers::trigger::Trigger;
 
 pub struct TriggerSystem {
@@ -22,20 +22,14 @@ impl TriggerSystem {
 }
 
 impl ChaosSystem for TriggerSystem {
-    fn initialize(
-        &mut self,
-        _component_manager: &mut crate::ecs::component::ChaosComponentManager,
-    ) -> Result<(), &'static str> {
+    fn initialize(&mut self, _world: &mut ChaosWorld) -> Result<(), &'static str> {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        _delta_time: f32,
-        _component_manager: &mut crate::ecs::component::ChaosComponentManager,
-    ) -> Result<(), &'static str> {
+    fn update(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str> {
+        let delta_time = world.get_time().delta_time();
         for trigger in &mut self.triggers {
-            trigger.update(_delta_time);
+            trigger.update(delta_time);
         }
         Ok(())
     }

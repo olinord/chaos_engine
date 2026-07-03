@@ -15,6 +15,18 @@ pub struct Vec4 {
 }
 
 impl Vec4 {
+    /// Creates a new `Vec4` with the given `x`, `y`, `z`, and `w` components.
+    ///
+    /// ```rust
+    /// use chaos_engine::math::Vec4;
+    ///
+    /// let v = Vec4::new(1.0, 2.0, 3.0, 4.0);
+    /// assert_eq!(v, Vec4 { x: 1.0, y: 2.0, z: 3.0, w: 4.0 });
+    /// ```
+    pub const fn new(x: f32, y: f32, z: f32, w: f32) -> Self {
+        Self { x, y, z, w }
+    }
+
     /// Returns the zero vector.
     ///
     /// ```rust

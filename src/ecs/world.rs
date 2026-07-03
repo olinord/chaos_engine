@@ -2,6 +2,7 @@ use std::{
     any::{TypeId, type_name},
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use chaos_communicator::{
@@ -9,18 +10,37 @@ use chaos_communicator::{
     message::ChaosMessage,
 };
 
-use crate::ecs::{
-    EntityID,
-    component::{ChaosComponentManager, Component},
-    entity::EntityBuilder,
-    errors::ComponentErrors,
-    system::ChaosSystem,
+use crate::{
+    ecs::{
+        EntityID,
+        component::{ChaosComponentManager, Component},
+        entity::EntityBuilder,
+        errors::ComponentErrors,
+        query::{QueryError, QueryIter, QueryTuple},
+        system::ChaosSystem,
+    },
+    triggers::trigger_event_key::TriggerEventKey,
 };
+
+pub struct WorldTime {
+    current_time: Instant,
+    last_time: Instant,
+}
+
+impl WorldTime {
+    pub fn delta_time(&self) -> f32 {
+        return self
+            .current_time
+            .duration_since(self.last_time)
+            .as_secs_f32();
+    }
+}
 
 pub struct ChaosWorld {
     component_manager: ChaosComponentManager,
     systems: HashMap<TypeId, Box<dyn ChaosSystem>>,
     communicator: Arc<Mutex<ChaosCommunicator>>,
+    time: WorldTime,
 }
 
 impl Default for ChaosWorld {
@@ -33,10 +53,31 @@ impl ChaosWorld {
     pub fn new() -> ChaosWorld {
         let communicator = Arc::new(Mutex::new(ChaosCommunicator::new()));
         ChaosWorld {
-            component_manager: ChaosComponentManager::new(100, 10, communicator.clone()),
+            component_manager: ChaosComponentManager::new(communicator.clone()),
             systems: HashMap::new(),
             communicator,
+            time: WorldTime {
+                current_time: Instant::now(),
+                last_time: Instant::now(),
+            },
         }
+    }
+
+    pub fn get_time(&self) -> &WorldTime {
+        &self.time
+    }
+
+    pub fn initialize_systems(&mut self) -> Result<(), &'static str> {
+        // slightly hacky way to avoid borrowing self.systems while iterating over it
+        let mut systems = std::mem::take(&mut self.systems);
+        for system in systems.values_mut() {
+            if let Err(error) = system.initialize(self) {
+                self.systems = systems;
+                return Err(error);
+            }
+        }
+        self.systems = systems;
+        Ok(())
     }
 
     pub fn send_message(&mut self, message: ChaosMessage) {
@@ -71,22 +112,31 @@ impl ChaosWorld {
         }
     }
 
-    pub fn add_system<T: ChaosSystem>(&mut self, system: T) {
-        log::info!("Adding system: {}", type_name::<T>());
-        self.systems.insert(TypeId::of::<T>(), Box::new(system));
-
-        // get first mutable reference to the system we just added
-        let system = self.systems.get_mut(&TypeId::of::<T>()).unwrap().as_mut();
-        match system.initialize(&mut self.component_manager) {
-            Ok(_) => (),
-            Err(e) => panic!("Failed to initialize system: {}", e),
-        };
+    pub fn register_for_trigger<T: std::hash::Hash>(&mut self, event: T) -> ChaosReceiver {
+        self.register_for(TriggerEventKey::new(&event))
     }
 
-    pub fn update(&mut self, delta_time: f32) -> Result<(), &'static str> {
-        for (_, system) in self.systems.iter_mut() {
-            system.update(delta_time, &mut self.component_manager)?;
+    pub fn add_system<T: ChaosSystem>(&mut self, system: T) -> &mut Self {
+        log::info!("Adding system: {}", type_name::<T>());
+
+        self.systems.insert(TypeId::of::<T>(), Box::new(system));
+        self
+    }
+
+    pub fn update(&mut self) -> Result<(), &'static str> {
+        self.time = WorldTime {
+            current_time: Instant::now(),
+            last_time: self.time.current_time,
+        };
+        // slightly hacky way to avoid borrowing self.systems while iterating over it
+        let mut systems = std::mem::take(&mut self.systems);
+        for system in systems.values_mut() {
+            if let Err(error) = system.update(self) {
+                self.systems = systems;
+                return Err(error);
+            }
         }
+        self.systems = systems;
         Ok(())
     }
 
@@ -95,8 +145,8 @@ impl ChaosWorld {
         EntityBuilder::new(self.component_manager.create_entity(), self)
     }
 
-    pub fn despawn(&mut self, entity: EntityID) -> Result<(), ComponentErrors> {
-        self.component_manager.remove_entity(entity)
+    pub fn despawn(&mut self, entity: EntityID) {
+        self.component_manager.remove_entity(entity);
     }
 
     pub fn add_component<T: Component>(
@@ -114,22 +164,40 @@ impl ChaosWorld {
         self.component_manager.remove_component::<T>(entity_id)
     }
 
-    pub fn get_component<T: Component>(&self, entity_id: EntityID) -> Result<&T, ComponentErrors> {
+    pub fn get_component<T: Component>(&self, entity_id: EntityID) -> Option<&T> {
         self.component_manager.get_component::<T>(entity_id)
     }
 
-    pub fn get_component_mut<T: Component>(
-        &mut self,
-        entity_id: EntityID,
-    ) -> Result<&mut T, ComponentErrors> {
+    pub fn get_component_mut<T: Component>(&mut self, entity_id: EntityID) -> Option<&mut T> {
         self.component_manager.get_component_mut::<T>(entity_id)
     }
 
-    pub fn get_all_components_of_type<T: Component>(&self) -> Result<Vec<&T>, ComponentErrors> {
+    pub fn get_all_components_of_type<T: Component>(
+        &self,
+    ) -> Result<Vec<(EntityID, &T)>, ComponentErrors> {
         self.component_manager.get_all_components_of_type::<T>()
+    }
+
+    pub fn query<'world, Q>(&'world mut self) -> Result<QueryIter<'world, Q>, QueryError>
+    where
+        Q: QueryTuple<'world>,
+    {
+        self.component_manager.query::<Q>()
+    }
+
+    pub fn for_each<'world, Q, F>(&'world mut self, f: F) -> Result<(), QueryError>
+    where
+        Q: QueryTuple<'world>,
+        F: FnMut(EntityID, Q::Item),
+    {
+        self.component_manager.for_each::<Q, F>(f)
     }
 
     pub fn subscribe_to_add<T: Component>(&mut self) -> ChaosReceiver {
         self.component_manager.subscribe_to_add::<T>()
+    }
+
+    pub fn subscribe_to_remove<T: Component>(&mut self) -> ChaosReceiver {
+        self.component_manager.subscribe_to_remove::<T>()
     }
 }

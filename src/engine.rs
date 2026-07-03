@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use crate::{
     device::system::DeviceEventSystem,
@@ -26,7 +26,6 @@ pub struct ChaosEngine {
     title: String,
     width: u32,
     height: u32,
-    frame_start_time: Instant,
     directories: HashMap<PathBuf, PathBuf>,
 }
 
@@ -42,7 +41,6 @@ impl ChaosEngine {
             title: title.to_string(),
             width,
             height,
-            frame_start_time: Instant::now(),
             directories: HashMap::new(),
         })
     }
@@ -103,8 +101,7 @@ impl ChaosEngine {
                 log::debug!("Input signal was not delivered: {}", error);
             }
         }
-        self.world
-            .update(self.frame_start_time.elapsed().as_secs_f32())
+        self.world.update()
     }
 
     fn render(&mut self) -> Result<(), &'static str> {
@@ -127,9 +124,8 @@ impl ChaosEngine {
             Err(ComponentErrors::ComponentNotFound(_)) => Vec::new(),
             Err(err) => panic!("failed to get renderable components: {err:?}"),
         };
-        rendering_system.render(renderables, &mut buffer_builder);
+        rendering_system.render(renderables, &mut buffer_builder, &self.world);
         rendering_system.end_frame(buffer_builder);
-        self.frame_start_time = Instant::now();
         Ok(())
     }
 }
@@ -138,6 +134,9 @@ impl ApplicationHandler for ChaosEngine {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.rendering_system.is_none() {
             self.initialize_rendering_system(event_loop);
+            self.world.initialize_systems().unwrap_or_else(|err| {
+                log::error!("Error initializing systems: {}", err);
+            });
         }
     }
 
