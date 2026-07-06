@@ -87,12 +87,25 @@ pub struct ChaosRenderSystem {
 }
 
 pub trait ChaosRenderableTrait {
-    fn initialize(&mut self, render_context: &Arc<ChaosRenderContext>) -> Result<(), &'static str>;
+    fn initialize(
+        &mut self,
+        world: &ChaosWorld,
+        entity_id: EntityID,
+        render_context: &Arc<ChaosRenderContext>,
+    ) -> Result<(), &'static str>;
+
+    fn update(
+        &mut self,
+        world: &ChaosWorld,
+        entity_id: EntityID,
+        render_context: &Arc<ChaosRenderContext>,
+    ) -> Result<(), &'static str>;
+
     fn add_to_command_buffer(
         &self,
-        command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         world: &ChaosWorld,
-        entity: &EntityID,
+        entity_id: EntityID,
+        command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     ) -> Result<(), Box<ValidationError>>;
 }
 
@@ -161,6 +174,7 @@ impl ChaosRenderSystem {
                 enabled_extensions: device_extensions,
                 enabled_features: DeviceFeatures {
                     dynamic_rendering: true,
+                    triangle_fans: true,
                     ..DeviceFeatures::empty()
                 },
                 ..Default::default()
@@ -285,14 +299,14 @@ impl ChaosRenderSystem {
         buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         world: &ChaosWorld,
     ) {
-        for (entity, renderable) in container {
+        for (entity_id, renderable) in container {
             match renderable
                 .renderable
-                .add_to_command_buffer(buffer_builder, world, &entity)
+                .add_to_command_buffer(world, entity_id, buffer_builder)
             {
                 Ok(()) => {}
                 Err(e) => {
-                    println!("Failed to add to command buffer: {e}");
+                    println!("Failed to add entity {} to command buffer: {e}", entity_id);
                 }
             }
         }
@@ -349,25 +363,38 @@ impl ChaosRenderSystem {
     }
 
     pub fn update(&mut self, world: &mut ChaosWorld) {
-        // iterate over the added and removed components
-        // gather all entity ids from the add_render_component receiver
-        let mut added_entity_ids = vec![];
+        // initialize the added components
+        // and update the existing components
+        let mut added_entity_ids: Vec<EntityID> = vec![];
         loop {
             let message = self.add_render_component.receive();
             if message.is_none() {
                 break;
             }
             let message = message.unwrap();
-            let entity_id = message.get("entity_id").unwrap();
+            let entity_id: EntityID = message.get("entity_id").unwrap();
             added_entity_ids.push(entity_id);
         }
-        for entity_id in added_entity_ids {
-            if let Some(entity) = world.get_component_mut::<ChaosRenderableContainer>(entity_id) {
-                if let Some(renderable) = Arc::get_mut(&mut entity.renderable) {
-                    match renderable.initialize(&self.render_context.clone()) {
+
+        for (entity_id, renderable) in world
+            .get_all_components_of_type::<ChaosRenderableContainer>()
+            .unwrap()
+        {
+            if added_entity_ids.contains(&entity_id) {
+                if let Some(renderable) = Arc::get_mut(&mut renderable.renderable.clone()) {
+                    match renderable.initialize(world, entity_id, &self.render_context.clone()) {
                         Ok(()) => {}
                         Err(e) => {
                             println!("Failed to initialize renderable: {}", e);
+                        }
+                    }
+                }
+            } else {
+                if let Some(renderable) = Arc::get_mut(&mut renderable.renderable.clone()) {
+                    match renderable.update(world, entity_id, &self.render_context.clone()) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            println!("Failed to update renderable: {}", e);
                         }
                     }
                 }

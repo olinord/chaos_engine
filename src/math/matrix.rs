@@ -249,7 +249,7 @@ impl Mat4 {
         mat
     }
 
-    pub fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> Self {
+    pub fn perspective_projection(fov_y: f32, aspect: f32, near: f32, far: f32) -> Self {
         let mut mat = Self::zero();
         let f = 1.0 / (fov_y / 2.0).tan();
 
@@ -262,7 +262,14 @@ impl Mat4 {
         mat
     }
 
-    pub fn orthographic(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> Self {
+    pub fn orthographic_projection(
+        left: f32,
+        right: f32,
+        bottom: f32,
+        top: f32,
+        near: f32,
+        far: f32,
+    ) -> Self {
         let mut mat = Self::identity();
 
         mat.data[0][0] = 2.0 / (right - left);
@@ -271,6 +278,7 @@ impl Mat4 {
 
         mat.data[3][0] = -(right + left) / (right - left);
         mat.data[3][1] = -(top + bottom) / (top - bottom);
+        mat.data[3][2] = -(far + near) / (far - near);
 
         mat
     }
@@ -472,7 +480,7 @@ mod tests {
 
     #[test]
     fn perspective_look_at_keeps_asteroidish_triangle_inside_clip_space() {
-        let projection = Mat4::perspective(std::f32::consts::PI / 2.0, 1.0, 0.1, 20.0);
+        let projection = Mat4::perspective_projection(std::f32::consts::PI / 2.0, 1.0, 0.1, 20.0);
         let view = Mat4::look_at(
             &[0.0, 0.0, 5.0].into(),
             &[0.0, 0.0, 0.0].into(),

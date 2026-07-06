@@ -12,6 +12,7 @@ use chaos_engine::{BufferContents, Vertex};
 use vulkano::ValidationError;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
 
+use crate::components::camera::CameraComponent;
 use crate::components::transform::TransformComponent;
 
 #[derive(BufferContents, Vertex)]
@@ -26,9 +27,10 @@ struct ShipVertex {
 pub struct ShipRenderable {
     effect: Option<ChaosEffect>,
     buffer: Option<ChaosBuffer>,
+    push_constants: TrianglePushConstants,
 }
 
-#[derive(BufferContents)]
+#[derive(BufferContents, Clone, Copy)]
 #[repr(C)]
 struct TrianglePushConstants {
     model: Mat4,
@@ -52,6 +54,7 @@ impl ShipRenderable {
         Self {
             effect: None,
             buffer: None,
+            push_constants: TrianglePushConstants::from_model(Mat4::identity()),
         }
     }
 }
@@ -59,19 +62,21 @@ impl ShipRenderable {
 impl ChaosRenderableTrait for ShipRenderable {
     fn initialize(
         &mut self,
+        world: &ChaosWorld,
+        entity_id: EntityID,
         rendering_context: &Arc<ChaosRenderContext>,
     ) -> Result<(), &'static str> {
         let vertices = vec![
             ShipVertex {
-                position: [0.0, -0.5].into(),
+                position: [0.0, -0.1].into(),
                 color: [1.0, 0.2, 0.1, 1.0].into(),
             },
             ShipVertex {
-                position: [0.5, 0.5].into(),
+                position: [0.1, 0.1].into(),
                 color: [0.1, 0.8, 0.25, 1.0].into(),
             },
             ShipVertex {
-                position: [-0.5, 0.5].into(),
+                position: [-0.1, 0.1].into(),
                 color: [0.1, 0.35, 1.0, 1.0].into(),
             },
         ];
@@ -84,21 +89,6 @@ impl ChaosRenderableTrait for ShipRenderable {
             println!("{}", error_string);
             return Err("boohoo");
         }
-        let mut effect = effect.unwrap();
-        effect
-            .set_uniform_data(
-                0,
-                0,
-                vec![TriangleMvp {
-                    projection: Mat4::perspective(std::f32::consts::PI / 2.0, 1.0, 0.1, 20.0),
-                    view: Mat4::look_at(
-                        &[0.0, 0.0, -5.0].into(),
-                        &[0.0, 0.0, 0.0].into(),
-                        &[0.0, 1.0, 0.0].into(),
-                    ),
-                }],
-            )
-            .map_err(|_| "Failed to set triangle MVP uniform data")?;
 
         let mut buffer = ChaosBuffer::new(
             "triangle-vertex-buffer".into(),
@@ -110,21 +100,61 @@ impl ChaosRenderableTrait for ShipRenderable {
             .set_data(vertices)
             .map_err(|_| "Failed to set triangle vertex buffer data")?;
 
-        self.effect = Some(effect);
+        let transform_component = world
+            .get_component::<TransformComponent>(entity_id)
+            .unwrap();
+
+        self.effect = Some(effect.unwrap());
         self.buffer = Some(buffer);
+        self.push_constants = TrianglePushConstants::from_model(transform_component.as_matrix());
         println!("Initialized ship renderable");
+        Ok(())
+    }
+
+    fn update(
+        &mut self,
+        world: &ChaosWorld,
+        entity_id: EntityID,
+        _render_context: &Arc<ChaosRenderContext>,
+    ) -> Result<(), &'static str> {
+        let camera_component = world
+            .get_all_components_of_type::<CameraComponent>()
+            .map_err(|_| "Failed to get camera component")?
+            .first()
+            .unwrap()
+            .1;
+
+        self.effect
+            .as_mut()
+            .unwrap()
+            .set_uniform_data(
+                0,
+                0,
+                vec![TriangleMvp {
+                    projection: camera_component.projection_matrix,
+                    view: camera_component.view_matrix,
+                }],
+            )
+            .map_err(|_| "Failed to set uniform data")?;
+
+        let transform_component = world
+            .get_component::<TransformComponent>(entity_id)
+            .unwrap();
+        self.push_constants.model = transform_component.as_matrix();
+
         Ok(())
     }
 
     fn add_to_command_buffer(
         &self,
+        _world: &ChaosWorld,
+        _entity_id: EntityID,
         command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-        world: &ChaosWorld,
-        entity: &EntityID,
     ) -> Result<(), Box<ValidationError>> {
         if self.effect.is_none() || self.buffer.is_none() {
             return Ok(());
         }
+
         let buffer = self
             .buffer
             .as_ref()
@@ -136,18 +166,9 @@ impl ChaosRenderableTrait for ShipRenderable {
 
         let effect = self.effect.as_ref().unwrap();
 
-        let transform_component = world.get_component::<TransformComponent>(*entity);
-
         effect.bind_descriptor_sets(command_buffer)?;
-        effect.bind_push_constants(
-            command_buffer,
-            0,
-            TrianglePushConstants::from_model(
-                transform_component
-                    .map(|tc| tc.as_matrix())
-                    .unwrap_or(Mat4::identity()),
-            ),
-        )?;
+        effect.bind_push_constants(command_buffer, 0, self.push_constants)?;
+
         command_buffer
             .bind_pipeline_graphics(effect.pipeline())?
             .bind_vertex_buffers(0, buffer)?;

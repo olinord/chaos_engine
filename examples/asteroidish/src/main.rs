@@ -1,20 +1,27 @@
 mod components;
+mod events;
 mod renderables;
 mod systems;
 
-use chaos_engine::device::bindings::{ChaosBindingEvent, ChaosButton};
+use chaos_engine::device::bindings::{ChaosBindingEvent, ChaosDeviceEventMatcher};
 use chaos_engine::device::events::ChaosKeyCode;
 use chaos_engine::engine::ChaosEngine;
 use chaos_engine::log;
 use chaos_engine::logger::ChaosLogger;
 use std::path::PathBuf;
 
+use crate::events::DeviceEvent;
+use crate::systems::asteroid::AsteroidSystem;
+use crate::systems::camera::CameraSystem;
+use crate::systems::ship::ShipSystem;
+use crate::systems::transform::TransformSystem;
+
 use crate::systems::ship::ShipEvent;
 
 fn main() {
     log::set_max_level(log::LevelFilter::Debug);
     log::set_logger(&ChaosLogger {}).unwrap();
-    let mut engine = ChaosEngine::new("Asteroidish", 1024, 1024).unwrap();
+    let mut engine = ChaosEngine::new("Asteroidish", 2048, 2048).unwrap();
     let shader_root = std::env::current_exe()
         .map_err(|_| "Failed to find current executable")
         .unwrap()
@@ -61,10 +68,18 @@ fn main() {
     engine
         .device_event_system()
         .bind(break_event, ShipEvent::Break);
+
+    engine.device_event_system().bind(
+        ChaosBindingEvent::Device(ChaosDeviceEventMatcher::Resized),
+        DeviceEvent::Resized,
+    );
+
     engine
         .world_mut()
-        .add_system(systems::transform::TransformSystem::new())
-        .add_system(systems::ship::ShipSystem::new());
+        .add_system(TransformSystem::new())
+        .add_system(ShipSystem::new())
+        .add_system(AsteroidSystem::new())
+        .add_system(CameraSystem::new());
 
     engine.run();
 }

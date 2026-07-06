@@ -98,13 +98,11 @@ impl ChaosSystem for ShipSystem {
             self.ship_entity.unwrap(),
         );
 
-        if (query.is_none()) {
+        if query.is_none() {
             return Err("Failed to query ship components");
         }
 
-        let mut components = query.unwrap();
-        let transform_component = components.0;
-        let velocity_component = components.1;
+        let (transform_component, velocity_component) = query.unwrap();
 
         if self.is_rotating_left() {
             transform_component.rotation -= 2.0 * delta_time; // Rotate left 

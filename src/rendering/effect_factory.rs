@@ -8,7 +8,7 @@ use vulkano::device::Device;
 use vulkano::format::Format;
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
-use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
+use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::subpass::{PipelineRenderingCreateInfo, PipelineSubpassType};
@@ -71,6 +71,7 @@ pub struct EffectUsage {
     pub path: PathBuf,
     viewports: Vec<Viewport>,
     color_attachment: Option<EffectColorAttachment>,
+    primitive_topology: PrimitiveTopology,
 }
 
 impl EffectUsage {
@@ -79,7 +80,13 @@ impl EffectUsage {
             path,
             viewports: Vec::new(),
             color_attachment: None,
+            primitive_topology: PrimitiveTopology::TriangleList,
         }
+    }
+
+    pub fn with_primitive_topology(mut self, primitive_topology: PrimitiveTopology) -> Self {
+        self.primitive_topology = primitive_topology;
+        self
     }
 
     pub fn with_viewports(mut self, viewports: Vec<Viewport>) -> Self {
@@ -420,6 +427,8 @@ impl EffectFactory {
             Some(ca) => ca.count,
             None => 1,
         };
+        let mut input_assembly_state = InputAssemblyState::default();
+        input_assembly_state.topology = usage.primitive_topology;
 
         let result = GraphicsPipeline::new(
             render_context.device().clone(),
@@ -430,7 +439,7 @@ impl EffectFactory {
                 // Describes the layout of the vertex input and how should it behave.
                 vertex_input_state: Some(vertex_input_state),
                 // Indicate the type of the primitives (the default is a list of triangles).
-                input_assembly_state: Some(InputAssemblyState::default()),
+                input_assembly_state: Some(input_assembly_state),
                 // Set the fixed viewport.
                 viewport_state: Some(ViewportState {
                     viewports: viewports.into_iter().collect(),

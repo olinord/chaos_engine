@@ -15,6 +15,11 @@ impl TransformComponent {
         }
     }
 
+    pub fn with_position(mut self, position: Vec2) -> Self {
+        self.position = position;
+        self
+    }
+
     pub fn as_matrix(&self) -> Mat4 {
         let translation_matrix = Mat4::translation(self.position.x, self.position.y, 0.0);
         let rotation_matrix = Mat4::rotation_z(self.rotation);
