@@ -16,7 +16,7 @@ const DEFAULT_ASPECT_RATIO: f32 = 16.0 / 9.0;
 const DEFAULT_FOV: f32 = std::f32::consts::PI / 2.0;
 const DEFAULT_NEAR_CLIP: f32 = 0.1;
 const DEFAULT_FAR_CLIP: f32 = 100.0;
-const DEFAULT_CAMERA_DISTANCE: f32 = 10.0;
+const DEFAULT_CAMERA_DISTANCE: f32 = -10.0;
 const RENDERING_PLANE: f32 = 0.0;
 
 impl CameraComponent {
