@@ -2,7 +2,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 use chaos_communicator::communicator::ChaosReceiver;
@@ -21,10 +21,11 @@ use vulkano::{
     image::view::ImageView,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::{FreeListAllocator, GenericMemoryAllocator, StandardMemoryAllocator},
-    pipeline::graphics::viewport::Viewport,
+    pipeline::graphics::viewport::{Scissor, Viewport},
     render_pass::{AttachmentLoadOp, AttachmentStoreOp},
     swapchain::{
-        self, PresentFuture, Surface, Swapchain, SwapchainAcquireFuture, SwapchainPresentInfo,
+        self, PresentFuture, Surface, Swapchain, SwapchainAcquireFuture, SwapchainCreateInfo,
+        SwapchainPresentInfo,
     },
     sync::{
         self, GpuFuture,
@@ -43,13 +44,18 @@ pub type Fence = FenceSignalFuture<
 >;
 
 #[derive(Debug)]
+struct SwapchainState {
+    swapchain: Arc<Swapchain>,
+    image_views: Vec<Arc<ImageView>>,
+    viewport: Viewport,
+}
+
+#[derive(Debug)]
 pub struct ChaosRenderContext {
     physical_device: Arc<PhysicalDevice>,
     device: Arc<Device>,
-    swapchain: Arc<Swapchain>,
-    image_views: Vec<Arc<ImageView>>,
     memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    viewport: Viewport,
+    swapchain_state: RwLock<SwapchainState>,
 }
 
 impl ChaosRenderContext {
@@ -62,7 +68,7 @@ impl ChaosRenderContext {
     }
 
     pub fn swapchain(&self) -> Arc<Swapchain> {
-        self.swapchain.clone()
+        self.swapchain_state.read().unwrap().swapchain.clone()
     }
 
     pub fn memory_allocator(&self) -> Arc<GenericMemoryAllocator<FreeListAllocator>> {
@@ -70,11 +76,37 @@ impl ChaosRenderContext {
     }
 
     pub fn viewport(&self) -> Viewport {
-        self.viewport.clone()
+        self.swapchain_state.read().unwrap().viewport.clone()
     }
 
     pub fn image_views(&self) -> Vec<Arc<ImageView>> {
-        self.image_views.clone()
+        self.swapchain_state.read().unwrap().image_views.clone()
+    }
+
+    /// Recreate the swapchain and its image views with the given surface extent.
+    /// The caller must ensure the GPU is not currently using the previous swapchain
+    /// images (wait on all in-flight fences before calling).
+    fn recreate_swapchain(&self, extent: [u32; 2]) -> Result<(), Validated<VulkanError>> {
+        let mut state = self.swapchain_state.write().unwrap();
+        let create_info = SwapchainCreateInfo {
+            image_extent: extent,
+            ..state.swapchain.create_info()
+        };
+        let (new_swapchain, new_images) = state.swapchain.recreate(create_info)?;
+        let new_image_views = new_images
+            .into_iter()
+            .map(|image| {
+                ImageView::new_default(image).expect("failed to create swapchain image view")
+            })
+            .collect();
+        state.swapchain = new_swapchain;
+        state.image_views = new_image_views;
+        state.viewport = Viewport {
+            offset: [0.0, 0.0],
+            extent: [extent[0] as f32, extent[1] as f32],
+            depth_range: 0.0..=1.0,
+        };
+        Ok(())
     }
 }
 
@@ -89,6 +121,7 @@ pub struct ChaosRenderSystem {
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     add_render_component: ChaosReceiver,
     directories: HashMap<PathBuf, PathBuf>,
+    pending_resize: Option<[u32; 2]>,
 }
 
 pub trait ChaosRenderableTrait {
@@ -229,10 +262,12 @@ impl ChaosRenderSystem {
         let render_context = Arc::new(ChaosRenderContext {
             physical_device: physical_device.clone(),
             device: device.clone(),
-            swapchain,
-            image_views,
             memory_allocator: memory_allocator.clone(),
-            viewport,
+            swapchain_state: RwLock::new(SwapchainState {
+                swapchain,
+                image_views,
+                viewport,
+            }),
         });
 
         ChaosRenderSystem {
@@ -245,23 +280,34 @@ impl ChaosRenderSystem {
             command_buffer_allocator,
             add_render_component,
             directories: directories.clone(),
+            pending_resize: None,
         }
     }
 
     pub fn start_frame(&mut self) -> Option<AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>> {
+        if let Some(extent) = self.pending_resize.take() {
+            if let Err(e) = self.recreate_swapchain_now(extent) {
+                log::warn!("Failed to recreate swapchain: {e:?}");
+                self.pending_resize = Some(extent);
+                return None;
+            }
+        }
+
         let (image_i, suboptimal, acquire_future) =
-            match swapchain::acquire_next_image(self.render_context.swapchain.clone(), None)
+            match swapchain::acquire_next_image(self.render_context.swapchain(), None)
                 .map_err(Validated::unwrap)
             {
                 Ok(r) => r,
                 Err(VulkanError::OutOfDate) => {
+                    self.pending_resize = Some(self.render_context.swapchain().image_extent());
                     return None;
                 }
                 Err(e) => panic!("failed to acquire next image: {e}"),
             };
 
         if suboptimal {
-            println!("Swapchain is suboptimal");
+            // Render this frame anyway, but recreate the swapchain before the next one.
+            self.pending_resize = Some(self.render_context.swapchain().image_extent());
         }
 
         if let Some(image_fence) = &self.fences[image_i as usize] {
@@ -279,22 +325,38 @@ impl ChaosRenderSystem {
         )
         .unwrap();
 
-        let mut color_attachment = RenderingAttachmentInfo::image_view(
-            self.render_context.image_views[image_i as usize].clone(),
-        );
+        let image_views = self.render_context.image_views();
+        let mut color_attachment =
+            RenderingAttachmentInfo::image_view(image_views[image_i as usize].clone());
         color_attachment.load_op = AttachmentLoadOp::Clear;
         color_attachment.store_op = AttachmentStoreOp::Store;
         color_attachment.clear_value = Some(ClearValue::Float([0.0, 0.0, 0.0, 1.0]));
 
+        let viewport_extent = self.render_context.viewport().extent;
         let rendering_info = RenderingInfo {
-            render_area_extent: [
-                self.render_context.viewport.extent[0] as u32,
-                self.render_context.viewport.extent[1] as u32,
-            ],
+            render_area_extent: [viewport_extent[0] as u32, viewport_extent[1] as u32],
             color_attachments: vec![Some(color_attachment)],
             ..Default::default()
         };
         current_builder.begin_rendering(rendering_info).unwrap();
+
+        // Push the current viewport/scissor to the command buffer so pipelines
+        // built with dynamic viewport state (see `EffectFactory`) pick up the
+        // current window size after a resize.
+        let dynamic_viewport = self.render_context.viewport();
+        current_builder
+            .set_viewport(0, std::iter::once(dynamic_viewport).collect())
+            .unwrap();
+        current_builder
+            .set_scissor(
+                0,
+                std::iter::once(Scissor {
+                    offset: [0, 0],
+                    extent: [viewport_extent[0] as u32, viewport_extent[1] as u32],
+                })
+                .collect(),
+            )
+            .unwrap();
         Some(current_builder)
     }
 
@@ -350,7 +412,7 @@ impl ChaosRenderSystem {
             .then_swapchain_present(
                 self.queue.clone().unwrap(),
                 SwapchainPresentInfo::swapchain_image_index(
-                    self.render_context.swapchain.clone(),
+                    self.render_context.swapchain(),
                     image_i,
                 ),
             )
@@ -358,7 +420,10 @@ impl ChaosRenderSystem {
 
         self.fences[image_i as usize] = match future.map_err(Validated::unwrap) {
             Ok(value) => Some(value),
-            Err(VulkanError::OutOfDate) => None,
+            Err(VulkanError::OutOfDate) => {
+                self.pending_resize = Some(self.render_context.swapchain().image_extent());
+                None
+            }
             Err(e) => {
                 println!("failed to flush future: {e}");
                 None
@@ -402,5 +467,27 @@ impl ChaosRenderSystem {
 
     pub fn render_context(&self) -> &Arc<ChaosRenderContext> {
         &self.render_context
+    }
+
+    /// Queue a swapchain recreation to happen at the start of the next frame.
+    /// Zero-sized extents (e.g. from a minimized window) are ignored.
+    pub fn request_resize(&mut self, extent: [u32; 2]) {
+        if extent[0] == 0 || extent[1] == 0 {
+            return;
+        }
+        self.pending_resize = Some(extent);
+    }
+
+    fn recreate_swapchain_now(
+        &mut self,
+        extent: [u32; 2],
+    ) -> Result<(), Validated<VulkanError>> {
+        // Wait for any in-flight frames before retiring the current swapchain.
+        for fence_slot in self.fences.iter_mut() {
+            if let Some(fence) = fence_slot.take() {
+                let _ = fence.wait(None);
+            }
+        }
+        self.render_context.recreate_swapchain(extent)
     }
 }

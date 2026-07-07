@@ -13,9 +13,11 @@ use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
 use vulkano::pipeline::graphics::subpass::{PipelineRenderingCreateInfo, PipelineSubpassType};
 use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
-use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
+use vulkano::pipeline::graphics::viewport::{Scissor, Viewport, ViewportState};
 use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
-use vulkano::pipeline::{GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
+use vulkano::pipeline::{
+    DynamicState, GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
+};
 use vulkano::shader::spirv::bytes_to_words;
 use vulkano::shader::{self, EntryPoint, ShaderModule, ShaderModuleCreateInfo};
 
@@ -412,11 +414,27 @@ impl EffectFactory {
         }
 
         let vertex_input_state = vertex_input_state.unwrap();
-        let viewports = if usage.viewports.is_empty() {
-            vec![render_context.viewport()]
+        let use_dynamic_viewport = usage.viewports.is_empty();
+        // When no fixed viewports are provided, the pipeline uses dynamic
+        // viewport + scissor state so it stays valid across window resizes.
+        // The current viewport/scissor is written into the command buffer once
+        // per frame in `ChaosRenderSystem::start_frame`.
+        let viewports = if use_dynamic_viewport {
+            std::iter::once(Viewport::default()).collect()
         } else {
-            usage.viewports.clone()
+            usage.viewports.iter().cloned().collect()
         };
+        let scissors = if use_dynamic_viewport {
+            std::iter::once(Scissor::default()).collect()
+        } else {
+            usage.viewports.iter().map(|_| Scissor::default()).collect()
+        };
+        let mut dynamic_state =
+            GraphicsPipelineCreateInfo::layout(shader_entry.layout.clone().unwrap()).dynamic_state;
+        if use_dynamic_viewport {
+            dynamic_state.insert(DynamicState::Viewport);
+            dynamic_state.insert(DynamicState::Scissor);
+        }
 
         let color_attachment_format = match &usage.color_attachment {
             Some(ca) => ca.format,
@@ -440,11 +458,12 @@ impl EffectFactory {
                 vertex_input_state: Some(vertex_input_state),
                 // Indicate the type of the primitives (the default is a list of triangles).
                 input_assembly_state: Some(input_assembly_state),
-                // Set the fixed viewport.
                 viewport_state: Some(ViewportState {
-                    viewports: viewports.into_iter().collect(),
+                    viewports,
+                    scissors,
                     ..Default::default()
                 }),
+                dynamic_state,
                 // Ignore these for now.
                 rasterization_state: Some(RasterizationState::default()),
                 multisample_state: Some(MultisampleState::default()),

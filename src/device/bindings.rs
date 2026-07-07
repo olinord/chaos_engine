@@ -25,13 +25,13 @@ pub enum ChaosBindingEvent {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ChaosButton {
     Mouse(ChaosMouseButton),
     Keyboard(ChaosKeyCode),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ChaosInputEventMatcher {
     Pressed(ChaosButton),
     Released(ChaosButton),
@@ -39,7 +39,7 @@ pub enum ChaosInputEventMatcher {
     MouseWheel,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ChaosDeviceEventMatcher {
     CloseRequested,
     Focused,

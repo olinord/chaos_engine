@@ -1,18 +1,24 @@
 use chaos_engine::{
+    ChaosReceiver,
     ecs::{system::ChaosSystem, world::ChaosWorld},
     math::Vec2,
 };
 
 use crate::{
     components::{camera::CameraComponent, transform::TransformComponent},
+    consts::DeviceEvent,
     consts::SpecializedEntities,
 };
 
-pub struct CameraSystem {}
+pub struct CameraSystem {
+    message_receiver: Option<ChaosReceiver>,
+}
 
 impl CameraSystem {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            message_receiver: None,
+        }
     }
 }
 
@@ -28,7 +34,7 @@ impl ChaosSystem for CameraSystem {
             ))
             .specialized(SpecializedEntities::Camera)
             .build();
-
+        self.message_receiver = Some(world.register_for_trigger(DeviceEvent::Resized));
         Ok(())
     }
 
@@ -44,6 +50,15 @@ impl ChaosSystem for CameraSystem {
         if let (Some(ship_transform), Some(camera_component)) = (ship_transform, camera_component) {
             camera_component.set_eye(ship_transform);
             camera_component.set_target(ship_transform);
+
+            let message = self.message_receiver.as_mut().unwrap().receive();
+            if let Some(message) = message {
+                if let Some(width) = message.get::<u32>("width") {
+                    if let Some(height) = message.get::<u32>("height") {
+                        camera_component.set_aspect_ratio(width as f32 / height as f32);
+                    }
+                }
+            }
         }
 
         Ok(())

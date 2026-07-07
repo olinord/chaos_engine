@@ -98,7 +98,7 @@ impl ChaosEngine {
     fn update(&mut self, event: &WindowEvent) -> Result<(), &'static str> {
         for message in self.device_event_system.update(event) {
             if let Err(error) = self.world.try_send_message(message) {
-                log::debug!("Input signal was not delivered: {}", error);
+                log::debug!("Input signal was not delivered: {} {:?}", error, event);
             }
         }
         self.world.update()
@@ -148,6 +148,11 @@ impl ApplicationHandler for ChaosEngine {
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(rendering_system) = self.rendering_system.as_mut() {
+                    rendering_system.request_resize([size.width, size.height]);
+                }
             }
             WindowEvent::RedrawRequested => {
                 self.window.as_ref().unwrap().request_redraw();
