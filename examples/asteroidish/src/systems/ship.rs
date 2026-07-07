@@ -1,12 +1,15 @@
 use chaos_engine::{
     ChaosReceiver,
-    ecs::{EntityID, system::ChaosSystem, world::ChaosWorld},
+    ecs::{system::ChaosSystem, world::ChaosWorld},
     math::{Vec2, matrix::Mat3},
     rendering::rendering_system::ChaosRenderableContainer,
 };
 
-use crate::components::{
-    bounds::BoundingCircle, transform::TransformComponent, velocity::VelocityComponent,
+use crate::{
+    components::{
+        bounds::BoundingCircle, transform::TransformComponent, velocity::VelocityComponent,
+    },
+    consts::SpecializedEntities,
 };
 
 use crate::renderables::ship::ShipRenderable;
@@ -26,7 +29,6 @@ pub struct ShipSystem {
     fire_receiver: Option<ChaosReceiver>,
     rotate_left_receiver: Option<ChaosReceiver>,
     rotate_right_receiver: Option<ChaosReceiver>,
-    ship_entity: Option<EntityID>,
 }
 
 impl ShipSystem {
@@ -37,7 +39,6 @@ impl ShipSystem {
             fire_receiver: None,
             rotate_left_receiver: None,
             rotate_right_receiver: None,
-            ship_entity: None,
         }
     }
 
@@ -79,23 +80,28 @@ impl ChaosSystem for ShipSystem {
         self.rotate_right_receiver = Some(world.register_for_trigger(ShipEvent::RotateRight));
 
         // create the ship
-        self.ship_entity = Some(
-            world
-                .spawn()
-                .with(TransformComponent::new())
-                .with(VelocityComponent::new())
-                .with(BoundingCircle::new())
-                .with(ChaosRenderableContainer::new(ShipRenderable::new()))
-                .build(),
-        );
+        world
+            .spawn()
+            .with(TransformComponent::new())
+            .with(VelocityComponent::new())
+            .with(BoundingCircle::new())
+            .with(ChaosRenderableContainer::new(ShipRenderable::new()))
+            .specialized(SpecializedEntities::Ship)
+            .build();
 
         Ok(())
     }
 
     fn update(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str> {
         let delta_time = world.get_time().delta_time();
+        let ship_entity = world.get_specialized_entity(SpecializedEntities::Ship);
+
+        if let None = ship_entity {
+            return Err("Ship entity not found");
+        }
+
         let query = world.query_for_entity::<(&mut TransformComponent, &mut VelocityComponent)>(
-            self.ship_entity.unwrap(),
+            ship_entity.unwrap(),
         );
 
         if query.is_none() {
@@ -123,6 +129,7 @@ impl ChaosSystem for ShipSystem {
                 Mat3::rotation(transform_component.rotation) * Vec2::new(0.0, -1.0) * break_amount;
             velocity_component.velocity += thrust * delta_time; // Apply break
         }
+
         Ok(())
     }
 }

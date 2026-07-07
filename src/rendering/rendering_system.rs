@@ -1,4 +1,9 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use chaos_communicator::communicator::ChaosReceiver;
 use log::debug;
@@ -110,7 +115,7 @@ pub trait ChaosRenderableTrait {
 }
 
 pub struct ChaosRenderableContainer {
-    renderable: Arc<dyn ChaosRenderableTrait>,
+    renderable: RefCell<Box<dyn ChaosRenderableTrait>>,
 }
 
 impl ChaosRenderableContainer {
@@ -119,7 +124,7 @@ impl ChaosRenderableContainer {
         T: ChaosRenderableTrait + 'static,
     {
         Self {
-            renderable: Arc::new(renderable),
+            renderable: RefCell::new(Box::new(renderable)),
         }
     }
 }
@@ -300,10 +305,11 @@ impl ChaosRenderSystem {
         world: &ChaosWorld,
     ) {
         for (entity_id, renderable) in container {
-            match renderable
-                .renderable
-                .add_to_command_buffer(world, entity_id, buffer_builder)
-            {
+            match renderable.renderable.borrow().add_to_command_buffer(
+                world,
+                entity_id,
+                buffer_builder,
+            ) {
                 Ok(()) => {}
                 Err(e) => {
                     println!("Failed to add entity {} to command buffer: {e}", entity_id);
@@ -362,10 +368,10 @@ impl ChaosRenderSystem {
         self.current_frame = self.current_frame.wrapping_add(1);
     }
 
-    pub fn update(&mut self, world: &mut ChaosWorld) {
+    pub fn update(&mut self, world: &ChaosWorld) {
         // initialize the added components
         // and update the existing components
-        let mut added_entity_ids: Vec<EntityID> = vec![];
+        let mut added_entity_ids: HashSet<EntityID> = HashSet::new();
         loop {
             let message = self.add_render_component.receive();
             if message.is_none() {
@@ -373,32 +379,24 @@ impl ChaosRenderSystem {
             }
             let message = message.unwrap();
             let entity_id: EntityID = message.get("entity_id").unwrap();
-            added_entity_ids.push(entity_id);
+            added_entity_ids.insert(entity_id);
         }
 
-        for (entity_id, renderable) in world
+        let all_renderables = world
             .get_all_components_of_type::<ChaosRenderableContainer>()
-            .unwrap()
-        {
+            .unwrap();
+
+        for (entity_id, renderable) in all_renderables {
+            let mut renderable = renderable.renderable.borrow_mut();
             if added_entity_ids.contains(&entity_id) {
-                if let Some(renderable) = Arc::get_mut(&mut renderable.renderable.clone()) {
-                    match renderable.initialize(world, entity_id, &self.render_context.clone()) {
-                        Ok(()) => {}
-                        Err(e) => {
-                            println!("Failed to initialize renderable: {}", e);
-                        }
-                    }
-                }
-            } else {
-                if let Some(renderable) = Arc::get_mut(&mut renderable.renderable.clone()) {
-                    match renderable.update(world, entity_id, &self.render_context.clone()) {
-                        Ok(()) => {}
-                        Err(e) => {
-                            println!("Failed to update renderable: {}", e);
-                        }
-                    }
-                }
+                renderable
+                    .initialize(world, entity_id, &self.render_context.clone())
+                    .unwrap();
             }
+
+            renderable
+                .update(world, entity_id, &self.render_context.clone())
+                .unwrap();
         }
     }
 

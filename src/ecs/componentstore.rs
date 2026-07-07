@@ -43,6 +43,12 @@ impl<T> ComponentStore<T> {
             .map(|(id, component)| (*id, component))
     }
 
+    pub fn entity_values_mut(&mut self) -> impl Iterator<Item = (EntityID, &mut T)> {
+        self.components
+            .iter_mut()
+            .map(|(id, component)| (*id, component))
+    }
+
     pub fn len(&self) -> usize {
         return self.components.len();
     }

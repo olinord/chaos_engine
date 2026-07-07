@@ -16,6 +16,7 @@ use vulkano::pipeline::graphics::input_assembly::PrimitiveTopology;
 
 use crate::components::camera::CameraComponent;
 use crate::components::transform::TransformComponent;
+use crate::consts::SpecializedEntities;
 
 #[derive(BufferContents, Vertex)]
 #[repr(C)]
@@ -148,11 +149,16 @@ impl ChaosRenderableTrait for AsteroidRenderable {
         _render_context: &Arc<ChaosRenderContext>,
     ) -> Result<(), &'static str> {
         let camera_component = world
-            .get_all_components_of_type::<CameraComponent>()
-            .unwrap()
-            .first()
-            .ok_or("No camera component found")?
-            .1;
+            .get_specialized_entity_component(SpecializedEntities::Camera)
+            .map(|component: &CameraComponent| {
+                (component.projection_matrix, component.view_matrix)
+            });
+
+        if let None = camera_component {
+            return Err("Camera entity not found");
+        }
+
+        let camera_component = camera_component.unwrap();
 
         if let Some(effect) = &mut self.effect {
             effect
@@ -160,8 +166,8 @@ impl ChaosRenderableTrait for AsteroidRenderable {
                     0,
                     0,
                     vec![PerFrameUniforms {
-                        projection: camera_component.projection_matrix,
-                        view: camera_component.view_matrix,
+                        projection: camera_component.0,
+                        view: camera_component.1,
                     }],
                 )
                 .map_err(|_| "Failed to set asteroid MVP uniform data")?;

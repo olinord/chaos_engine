@@ -1,6 +1,7 @@
 use std::{
     any::{TypeId, type_name},
     collections::HashMap,
+    hash::{Hash, Hasher},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -39,8 +40,26 @@ impl WorldTime {
 pub struct ChaosWorld {
     component_manager: ChaosComponentManager,
     systems: HashMap<TypeId, Box<dyn ChaosSystem>>,
+    specialized_entities: HashMap<SpecializedEntityKey, EntityID>,
     communicator: Arc<Mutex<ChaosCommunicator>>,
     time: WorldTime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct SpecializedEntityKey {
+    key_type: TypeId,
+    hash: u64,
+}
+
+impl SpecializedEntityKey {
+    fn new<T: Hash + 'static>(key: &T) -> Self {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        Self {
+            key_type: TypeId::of::<T>(),
+            hash: hasher.finish(),
+        }
+    }
 }
 
 impl Default for ChaosWorld {
@@ -55,6 +74,7 @@ impl ChaosWorld {
         ChaosWorld {
             component_manager: ChaosComponentManager::new(communicator.clone()),
             systems: HashMap::new(),
+            specialized_entities: HashMap::new(),
             communicator,
             time: WorldTime {
                 current_time: Instant::now(),
@@ -147,6 +167,43 @@ impl ChaosWorld {
 
     pub fn despawn(&mut self, entity: EntityID) {
         self.component_manager.remove_entity(entity);
+        self.specialized_entities
+            .retain(|_, registered_entity| *registered_entity != entity);
+    }
+
+    pub fn register_specialized_entity<T: Hash + 'static>(
+        &mut self,
+        key: T,
+        entity: EntityID,
+    ) -> Option<EntityID> {
+        let key = SpecializedEntityKey::new(&key);
+        self.specialized_entities.insert(key, entity)
+    }
+
+    pub fn get_specialized_entity<T: Hash + 'static>(&self, key: T) -> Option<EntityID> {
+        let key = SpecializedEntityKey::new(&key);
+        self.specialized_entities.get(&key).copied()
+    }
+
+    pub fn get_specialized_entity_component<T: Hash + 'static, C: Component>(
+        &self,
+        key: T,
+    ) -> Option<&C> {
+        let entity_id = self.get_specialized_entity(key)?;
+        self.get_component::<C>(entity_id)
+    }
+
+    pub fn get_specialized_entity_component_mut<T: Hash + 'static, C: Component>(
+        &mut self,
+        key: T,
+    ) -> Option<&mut C> {
+        let entity_id = self.get_specialized_entity(key)?;
+        self.get_component_mut::<C>(entity_id)
+    }
+
+    pub fn unregister_specialized_entity<T: Hash + 'static>(&mut self, key: T) -> Option<EntityID> {
+        let key = SpecializedEntityKey::new(&key);
+        self.specialized_entities.remove(&key)
     }
 
     pub fn add_component<T: Component>(
@@ -176,6 +233,12 @@ impl ChaosWorld {
         &self,
     ) -> Result<Vec<(EntityID, &T)>, ComponentErrors> {
         self.component_manager.get_all_components_of_type::<T>()
+    }
+
+    pub fn get_all_mut_components_of_type<T: Component>(
+        &mut self,
+    ) -> Result<Vec<(EntityID, &mut T)>, ComponentErrors> {
+        self.component_manager.get_all_mut_components_of_type::<T>()
     }
 
     pub fn query<'world, Q>(&'world mut self) -> Result<QueryIter<'world, Q>, QueryError>

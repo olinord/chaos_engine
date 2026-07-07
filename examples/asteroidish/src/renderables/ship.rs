@@ -14,6 +14,7 @@ use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer
 
 use crate::components::camera::CameraComponent;
 use crate::components::transform::TransformComponent;
+use crate::consts::SpecializedEntities;
 
 #[derive(BufferContents, Vertex)]
 #[repr(C)]
@@ -118,11 +119,16 @@ impl ChaosRenderableTrait for ShipRenderable {
         _render_context: &Arc<ChaosRenderContext>,
     ) -> Result<(), &'static str> {
         let camera_component = world
-            .get_all_components_of_type::<CameraComponent>()
-            .map_err(|_| "Failed to get camera component")?
-            .first()
-            .unwrap()
-            .1;
+            .get_specialized_entity_component(SpecializedEntities::Camera)
+            .map(|component: &CameraComponent| {
+                (component.projection_matrix, component.view_matrix)
+            });
+
+        if let None = camera_component {
+            return Err("Camera entity not found");
+        }
+
+        let camera_component = camera_component.unwrap();
 
         self.effect
             .as_mut()
@@ -131,8 +137,8 @@ impl ChaosRenderableTrait for ShipRenderable {
                 0,
                 0,
                 vec![TriangleMvp {
-                    projection: camera_component.projection_matrix,
-                    view: camera_component.view_matrix,
+                    projection: camera_component.0,
+                    view: camera_component.1,
                 }],
             )
             .map_err(|_| "Failed to set uniform data")?;

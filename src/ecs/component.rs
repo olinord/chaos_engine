@@ -230,6 +230,15 @@ impl ChaosComponentManager {
         }
     }
 
+    pub fn get_all_mut_components_of_type<T: Component>(
+        &mut self,
+    ) -> Result<Vec<(EntityID, &mut T)>, ComponentErrors> {
+        match self.store_mut::<T>() {
+            Some(store) => Ok(store.entity_values_mut().collect()),
+            None => Err(ComponentErrors::ComponentNotFound(TypeId::of::<T>())),
+        }
+    }
+
     pub fn entities_matching(&self, accesses: &[QueryAccess]) -> Vec<EntityID> {
         let mut type_ids = Vec::new();
         for access in accesses {

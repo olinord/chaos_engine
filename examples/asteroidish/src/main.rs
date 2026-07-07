@@ -1,5 +1,5 @@
 mod components;
-mod events;
+mod consts;
 mod renderables;
 mod systems;
 
@@ -10,7 +10,7 @@ use chaos_engine::log;
 use chaos_engine::logger::ChaosLogger;
 use std::path::PathBuf;
 
-use crate::events::DeviceEvent;
+use crate::consts::DeviceEvent;
 use crate::systems::asteroid::AsteroidSystem;
 use crate::systems::camera::CameraSystem;
 use crate::systems::ship::ShipSystem;
