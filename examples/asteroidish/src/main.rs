@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use crate::consts::DeviceEvent;
 use crate::systems::asteroid::AsteroidSystem;
 use crate::systems::camera::CameraSystem;
+use crate::systems::impact::ImpactSystem;
 use crate::systems::ship::ShipSystem;
 use crate::systems::transform::TransformSystem;
 
@@ -21,7 +22,9 @@ use crate::systems::ship::ShipEvent;
 fn main() {
     log::set_max_level(log::LevelFilter::Debug);
     log::set_logger(&ChaosLogger {}).unwrap();
-    let mut engine = ChaosEngine::new("Asteroidish", 2048, 2048).unwrap();
+    let width = 2048;
+    let height = 2048;
+    let mut engine = ChaosEngine::new("Asteroidish", width, height).unwrap();
     let shader_root = std::env::current_exe()
         .map_err(|_| "Failed to find current executable")
         .unwrap()
@@ -79,7 +82,8 @@ fn main() {
         .add_system(TransformSystem::new())
         .add_system(ShipSystem::new())
         .add_system(AsteroidSystem::new())
-        .add_system(CameraSystem::new());
+        .add_system(ImpactSystem::new())
+        .add_system(CameraSystem::new(width, height));
 
     engine.run();
 }

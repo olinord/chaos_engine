@@ -7,7 +7,7 @@ use chaos_engine::{
 
 use crate::{
     components::{
-        bounds::BoundingCircle, transform::TransformComponent, velocity::VelocityComponent,
+        shape::ShapeComponent, transform::TransformComponent, velocity::VelocityComponent,
     },
     consts::SpecializedEntities,
 };
@@ -84,7 +84,7 @@ impl ChaosSystem for ShipSystem {
             .spawn()
             .with(TransformComponent::new())
             .with(VelocityComponent::new())
-            .with(BoundingCircle::new())
+            .with(ShapeComponent::ship())
             .with(ChaosRenderableContainer::new(ShipRenderable::new()))
             .specialized(SpecializedEntities::Ship)
             .build();
@@ -125,11 +125,15 @@ impl ChaosSystem for ShipSystem {
         }
         if self.is_breaking() {
             let break_amount = -0.5;
-            let thrust =
-                Mat3::rotation(transform_component.rotation) * Vec2::new(0.0, -1.0) * break_amount;
-            velocity_component.velocity += thrust * delta_time; // Apply break
+            let thrust = (Mat3::rotation(transform_component.rotation) * Vec2::new(0.0, -1.0))
+                * break_amount;
+            if Vec2::distance_squared(&velocity_component.velocity, &(thrust * delta_time)) < 0.1f32
+            {
+                velocity_component.velocity = Vec2::new(0.0, 0.0);
+            } else {
+                velocity_component.velocity += thrust * delta_time; // Apply break
+            }
         }
-
         Ok(())
     }
 }

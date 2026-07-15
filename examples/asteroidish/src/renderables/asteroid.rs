@@ -9,12 +9,12 @@ use chaos_engine::rendering::effect_factory::{EffectFactory, EffectUsage};
 use chaos_engine::rendering::rendering_system::{ChaosRenderContext, ChaosRenderableTrait};
 use chaos_engine::rendering::{buffer::ChaosBuffer, effect::ChaosEffect};
 use chaos_engine::{BufferContents, Vertex};
-use rand::random_range;
 use vulkano::ValidationError;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
 use vulkano::pipeline::graphics::input_assembly::PrimitiveTopology;
 
 use crate::components::camera::CameraComponent;
+use crate::components::shape::ShapeComponent;
 use crate::components::transform::TransformComponent;
 use crate::consts::SpecializedEntities;
 
@@ -28,8 +28,8 @@ struct ShipVertex {
 pub struct AsteroidRenderable {
     effect: Option<ChaosEffect>,
     buffer: Option<ChaosBuffer>,
-    points: Vec<Vec2>,
     push_constants: PushConstants,
+    point_count: u32,
 }
 
 #[derive(BufferContents)]
@@ -52,53 +52,12 @@ struct PerFrameUniforms {
 }
 
 impl AsteroidRenderable {
-    pub fn new(radius: Vec2, roughness: f32) -> Self {
-        // generate the points for the asteroid shape
-        let segments = random_range(12..128); // random number of segments between 128 and 256
-
-        let noise_function = |x: f32| -> f32 {
-            let mut noise = 0.0;
-            let mut frequency = roughness;
-            let mut amplitude = 1.0;
-            for _ in 0..4 {
-                noise += amplitude * (x * frequency).sin();
-                frequency *= 2.0;
-                amplitude *= 0.5;
-            }
-            noise
-        };
-
-        let start_point = random_range(-1000.0f32..1000.0f32);
-
-        let radii = (0..segments)
-            .map(|i| radius + radius * noise_function(start_point + i as f32 / segments as f32))
-            .collect::<Vec<Vec2>>();
-
-        // smooth the radii to create a more natural shape
-        let smooth_radii: Vec<Vec2> = radii
-            .iter()
-            .enumerate()
-            .map(|(i, &r)| {
-                let prev = radii[(i + segments - 1) % segments];
-                let next = radii[(i + 1) % segments];
-                (prev + r * 2.0 + next) / 4.0
-            })
-            .collect();
-
-        let points: Vec<Vec2> = smooth_radii
-            .iter()
-            .enumerate()
-            .map(|(i, &r)| {
-                let angle = (i as f32 / segments as f32) * std::f32::consts::TAU;
-                Vec2::new(r.x * angle.cos(), r.y * angle.sin())
-            })
-            .collect();
-
+    pub fn new() -> Self {
         Self {
             effect: None,
             buffer: None,
-            points,
             push_constants: PushConstants::from_model(Mat4::identity()),
+            point_count: 0,
         }
     }
 }
@@ -111,7 +70,7 @@ impl ChaosRenderableTrait for AsteroidRenderable {
         rendering_context: &Arc<ChaosRenderContext>,
     ) -> Result<(), &'static str> {
         let usage = EffectUsage::new("shaders:/line".into())
-            .with_primitive_topology(PrimitiveTopology::TriangleFan);
+            .with_primitive_topology(PrimitiveTopology::TriangleList);
 
         let effect = EffectFactory::instance().get_effect::<ShipVertex>(&usage, rendering_context);
         if let Err(_error) = effect {
@@ -127,13 +86,26 @@ impl ChaosRenderableTrait for AsteroidRenderable {
             rendering_context.clone(),
         );
 
+        let points = world
+            .get_component::<ShapeComponent>(entity_id)
+            .map(|shape| {
+                shape
+                    .shape
+                    .iter()
+                    .flat_map(|tri| [tri.a, tri.b, tri.c])
+                    .collect::<Vec<Vec2>>()
+            })
+            .unwrap_or(Vec::new());
+
+        self.point_count = points.len() as u32;
+
         buffer
-            .set_data(self.points.clone())
+            .set_data(points.clone())
             .map_err(|_| "Failed to set asteroid vertex buffer data")?;
 
         self.push_constants.model = world
             .get_component::<TransformComponent>(entity_id)
-            .map(|tc| tc.as_matrix())
+            .map(|tc| tc.as_mat4())
             .unwrap_or(Mat4::identity());
 
         self.effect = Some(effect.unwrap());
@@ -204,7 +176,7 @@ impl ChaosRenderableTrait for AsteroidRenderable {
             0,
             PushConstants::from_model(
                 transform_component
-                    .map(|tc| tc.as_matrix())
+                    .map(|tc| tc.as_mat4())
                     .unwrap_or(Mat4::identity()),
             ),
         )?;
@@ -212,7 +184,7 @@ impl ChaosRenderableTrait for AsteroidRenderable {
             .bind_pipeline_graphics(effect.pipeline())?
             .bind_vertex_buffers(0, buffer)?;
         unsafe {
-            command_buffer.draw(self.points.len() as u32, 1, 0, 0)?;
+            command_buffer.draw(self.point_count, 1, 0, 0)?;
         }
         Ok(())
     }

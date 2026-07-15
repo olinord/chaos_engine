@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use chaos_engine::ecs::EntityID;
 use chaos_engine::ecs::world::ChaosWorld;
+use chaos_engine::math::Vec2;
 use chaos_engine::math::matrix::Mat4;
-use chaos_engine::math::{Vec2, Vec4};
 use chaos_engine::rendering::buffer::{ChaosBufferMemoryType, ChaosBufferUsage};
 use chaos_engine::rendering::effect_factory::{EffectFactory, EffectUsage};
 use chaos_engine::rendering::rendering_system::{ChaosRenderContext, ChaosRenderableTrait};
@@ -13,6 +13,7 @@ use vulkano::ValidationError;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
 
 use crate::components::camera::CameraComponent;
+use crate::components::shape::ShapeComponent;
 use crate::components::transform::TransformComponent;
 use crate::consts::SpecializedEntities;
 
@@ -21,13 +22,12 @@ use crate::consts::SpecializedEntities;
 struct ShipVertex {
     #[format(R32G32_SFLOAT)]
     position: Vec2,
-    #[format(R32G32B32A32_SFLOAT)]
-    color: Vec4,
 }
 
 pub struct ShipRenderable {
     effect: Option<ChaosEffect>,
     buffer: Option<ChaosBuffer>,
+    vertex_count: u32,
     push_constants: TrianglePushConstants,
 }
 
@@ -55,6 +55,7 @@ impl ShipRenderable {
         Self {
             effect: None,
             buffer: None,
+            vertex_count: 0,
             push_constants: TrianglePushConstants::from_model(Mat4::identity()),
         }
     }
@@ -67,21 +68,6 @@ impl ChaosRenderableTrait for ShipRenderable {
         entity_id: EntityID,
         rendering_context: &Arc<ChaosRenderContext>,
     ) -> Result<(), &'static str> {
-        let vertices = vec![
-            ShipVertex {
-                position: [0.0, -0.1].into(),
-                color: [1.0, 0.2, 0.1, 1.0].into(),
-            },
-            ShipVertex {
-                position: [0.1, 0.1].into(),
-                color: [0.1, 0.8, 0.25, 1.0].into(),
-            },
-            ShipVertex {
-                position: [-0.1, 0.1].into(),
-                color: [0.1, 0.35, 1.0, 1.0].into(),
-            },
-        ];
-
         let usage = EffectUsage::new("shaders:/triangle".into());
 
         let effect = EffectFactory::instance().get_effect::<ShipVertex>(&usage, rendering_context);
@@ -91,6 +77,18 @@ impl ChaosRenderableTrait for ShipRenderable {
             return Err("boohoo");
         }
 
+        let points = world
+            .get_component::<ShapeComponent>(entity_id)
+            .map(|shape| {
+                shape
+                    .shape
+                    .iter()
+                    .flat_map(|tri| [tri.a, tri.b, tri.c])
+                    .collect::<Vec<Vec2>>()
+            })
+            .unwrap_or(Vec::new());
+        self.vertex_count = points.len() as u32;
+
         let mut buffer = ChaosBuffer::new(
             "triangle-vertex-buffer".into(),
             ChaosBufferUsage::VertexBuffer,
@@ -98,7 +96,7 @@ impl ChaosRenderableTrait for ShipRenderable {
             rendering_context.clone(),
         );
         buffer
-            .set_data(vertices)
+            .set_data(points)
             .map_err(|_| "Failed to set triangle vertex buffer data")?;
 
         let transform_component = world
@@ -107,8 +105,7 @@ impl ChaosRenderableTrait for ShipRenderable {
 
         self.effect = Some(effect.unwrap());
         self.buffer = Some(buffer);
-        self.push_constants = TrianglePushConstants::from_model(transform_component.as_matrix());
-        println!("Initialized ship renderable");
+        self.push_constants = TrianglePushConstants::from_model(transform_component.as_mat4());
         Ok(())
     }
 
@@ -146,7 +143,7 @@ impl ChaosRenderableTrait for ShipRenderable {
         let transform_component = world
             .get_component::<TransformComponent>(entity_id)
             .unwrap();
-        self.push_constants.model = transform_component.as_matrix();
+        self.push_constants.model = transform_component.as_mat4();
 
         Ok(())
     }
@@ -179,7 +176,7 @@ impl ChaosRenderableTrait for ShipRenderable {
             .bind_pipeline_graphics(effect.pipeline())?
             .bind_vertex_buffers(0, buffer)?;
         unsafe {
-            command_buffer.draw(3, 1, 0, 0)?;
+            command_buffer.draw(self.vertex_count, 1, 0, 0)?;
         }
 
         Ok(())

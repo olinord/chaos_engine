@@ -5,19 +5,24 @@ use chaos_engine::{
 };
 
 use crate::{
-    components::{camera::CameraComponent, transform::TransformComponent},
-    consts::DeviceEvent,
-    consts::SpecializedEntities,
+    components::{
+        camera::CameraComponent, transform::TransformComponent, velocity::VelocityComponent,
+    },
+    consts::{DeviceEvent, SpecializedEntities},
 };
 
 pub struct CameraSystem {
     message_receiver: Option<ChaosReceiver>,
+    width: u32,
+    height: u32,
 }
 
 impl CameraSystem {
-    pub fn new() -> Self {
+    pub fn new(width: u32, height: u32) -> Self {
         Self {
             message_receiver: None,
+            width,
+            height,
         }
     }
 }
@@ -31,6 +36,7 @@ impl ChaosSystem for CameraSystem {
                 Vec2::new(0.0, 0.0),
                 Vec2::new(0.0, 0.0),
                 0f32,
+                self.width as f32 / self.height as f32,
             ))
             .specialized(SpecializedEntities::Camera)
             .build();
@@ -39,17 +45,31 @@ impl ChaosSystem for CameraSystem {
     }
 
     fn update(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str> {
+        let delta_time = world.get_time().delta_time();
+
         // focus on the ship
         let ship_transform: Option<Vec2> = world
             .get_specialized_entity_component(SpecializedEntities::Ship)
             .map(|transform: &TransformComponent| transform.position);
 
+        let ship_velocity: Option<Vec2> = world
+            .get_specialized_entity_component(SpecializedEntities::Ship)
+            .map(|velocity: &VelocityComponent| velocity.velocity);
+
         let camera_component: Option<&mut CameraComponent> =
             world.get_specialized_entity_component_mut(SpecializedEntities::Camera);
 
-        if let (Some(ship_transform), Some(camera_component)) = (ship_transform, camera_component) {
-            camera_component.set_eye(ship_transform);
-            camera_component.set_target(ship_transform);
+        if let (Some(ship_transform), Some(camera_component), Some(ship_velocity)) =
+            (ship_transform, camera_component, ship_velocity)
+        {
+            let target = ship_transform + ship_velocity;
+            let current_camera_position = Vec2::lerp(
+                &camera_component.eye.xy(),
+                &target.xy(),
+                delta_time * ship_velocity.length(),
+            );
+
+            camera_component.update(current_camera_position, current_camera_position, 0f32);
 
             let message = self.message_receiver.as_mut().unwrap().receive();
             if let Some(message) = message {
