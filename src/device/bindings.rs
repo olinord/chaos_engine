@@ -97,6 +97,10 @@ impl ChaosBindingEvent {
         ChaosBindingEvent::Sequence { events, within }
     }
 
+    pub fn pressed(button: ChaosButton) -> Self {
+        ChaosBindingEvent::Input(ChaosInputEventMatcher::Pressed(button))
+    }
+
     pub fn mouse_button_held(
         button: ChaosMouseButton,
         duration: Duration,

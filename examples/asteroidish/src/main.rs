@@ -3,7 +3,7 @@ mod consts;
 mod renderables;
 mod systems;
 
-use chaos_engine::device::bindings::{ChaosBindingEvent, ChaosDeviceEventMatcher};
+use chaos_engine::device::bindings::{ChaosBindingEvent, ChaosButton, ChaosDeviceEventMatcher};
 use chaos_engine::device::events::ChaosKeyCode;
 use chaos_engine::engine::ChaosEngine;
 use chaos_engine::log;
@@ -59,6 +59,8 @@ fn main() {
         true,
     );
 
+    let fire_event = ChaosBindingEvent::pressed(ChaosButton::keyboard_key(ChaosKeyCode::Space));
+
     engine
         .device_event_system()
         .bind(rotate_left_event, ShipEvent::RotateLeft);
@@ -71,11 +73,9 @@ fn main() {
     engine
         .device_event_system()
         .bind(break_event, ShipEvent::Break);
-
-    engine.device_event_system().bind(
-        ChaosBindingEvent::Device(ChaosDeviceEventMatcher::Resized),
-        DeviceEvent::Resized,
-    );
+    engine
+        .device_event_system()
+        .bind(fire_event, ShipEvent::Fire);
 
     engine
         .world_mut()
@@ -84,6 +84,11 @@ fn main() {
         .add_system(AsteroidSystem::new())
         .add_system(ImpactSystem::new())
         .add_system(CameraSystem::new(width, height));
+
+    engine.device_event_system().bind(
+        ChaosBindingEvent::Device(ChaosDeviceEventMatcher::Resized),
+        DeviceEvent::Resized,
+    );
 
     engine.run();
 }

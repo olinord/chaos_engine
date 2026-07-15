@@ -217,4 +217,17 @@ impl ShapeComponent {
             bounding_radius,
         };
     }
+
+    pub fn bullet() -> Self {
+        let shape = vec![Triangle2D::new(
+            Vec2::new(0.0, -0.1),
+            Vec2::new(0.05, 0.1),
+            Vec2::new(-0.05, 0.1),
+        )];
+        let bounding_radius = Self::compute_bounding_radius(&shape);
+        Self {
+            shape,
+            bounding_radius,
+        }
+    }
 }

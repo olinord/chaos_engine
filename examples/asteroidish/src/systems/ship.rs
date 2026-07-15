@@ -10,6 +10,7 @@ use crate::{
         shape::ShapeComponent, transform::TransformComponent, velocity::VelocityComponent,
     },
     consts::SpecializedEntities,
+    renderables::bullet::BulletRenderable,
 };
 
 use crate::renderables::ship::ShipRenderable;
@@ -69,6 +70,13 @@ impl ShipSystem {
             None => false,
         }
     }
+
+    fn is_firing(&mut self) -> bool {
+        match self.fire_receiver.as_mut() {
+            Some(receiver) => receiver.receive().is_some(),
+            None => false,
+        }
+    }
 }
 
 impl ChaosSystem for ShipSystem {
@@ -100,15 +108,17 @@ impl ChaosSystem for ShipSystem {
             return Err("Ship entity not found");
         }
 
-        let query = world.query_for_entity::<(&mut TransformComponent, &mut VelocityComponent)>(
-            ship_entity.unwrap(),
-        );
+        let (transform_component, velocity_component) = {
+            let query = world
+                .query_for_entity::<(&mut TransformComponent, &mut VelocityComponent)>(
+                    ship_entity.unwrap(),
+                );
 
-        if query.is_none() {
-            return Err("Failed to query ship components");
-        }
-
-        let (transform_component, velocity_component) = query.unwrap();
+            if query.is_none() {
+                return Err("Failed to query ship components");
+            }
+            query.unwrap()
+        };
 
         if self.is_rotating_left() {
             transform_component.rotation -= 2.0 * delta_time; // Rotate left 
@@ -133,6 +143,30 @@ impl ChaosSystem for ShipSystem {
             } else {
                 velocity_component.velocity += thrust * delta_time; // Apply break
             }
+        }
+
+        let ship_position = transform_component.position;
+        let ship_rotation = transform_component.rotation;
+        let ship_velocity = velocity_component.velocity;
+
+        if self.is_firing() {
+            let firing_speed = 5.0;
+            let firing_direction = Mat3::rotation(ship_rotation) * Vec2::new(0.0, -1.0);
+            let initial_position = ship_position + firing_direction * 0.5; // Offset the bullet's initial position
+            let initial_velocity = ship_velocity + firing_direction * firing_speed;
+            world
+                .spawn()
+                .with(TransformComponent {
+                    position: initial_position,
+                    rotation: ship_rotation,
+                    scale: Vec2::one(),
+                })
+                .with(VelocityComponent {
+                    velocity: initial_velocity,
+                })
+                .with(ShapeComponent::bullet())
+                .with(ChaosRenderableContainer::new(BulletRenderable::new()))
+                .build();
         }
         Ok(())
     }
