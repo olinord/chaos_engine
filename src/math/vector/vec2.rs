@@ -291,6 +291,16 @@ impl Vec2 {
         }
     }
 
+    /// Returns a `Vec3` with the same `x` and `y` components as this vector, and the given `z` component.
+    pub fn as_vec3(&self, z: f32) -> Vec3 {
+        Vec3::new(self.x, self.y, z)
+    }
+
+    /// Returns a `Vec4` with the same `x` and `y` components as this vector, and the given `z` and `w` components.
+    pub fn as_vec4(&self, z: f32, w: f32) -> Vec4 {
+        Vec4::new(self.x, self.y, z, w)
+    }
+
     // member functions
     /// Normalizes this vector in place if its length is non-zero.
     ///
@@ -359,6 +369,13 @@ impl Vec2 {
     /// ```
     pub fn length_squared(&self) -> f32 {
         self.x * self.x + self.y * self.y
+    }
+
+    pub fn perpendicular(&self) -> Self {
+        Self {
+            x: -self.y,
+            y: self.x,
+        }
     }
 
     // swizzling methods

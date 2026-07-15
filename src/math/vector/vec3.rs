@@ -390,6 +390,11 @@ impl Vec3 {
         self.z = self.z.clamp(min.z, max.z);
     }
 
+    /// Returns a `Vec4` with the same `x`, `y`, and `z` components as this vector, and the given `w` component.
+    pub fn as_vec4(&self, w: f32) -> Vec4 {
+        Vec4::new(self.x, self.y, self.z, w)
+    }
+
     /// Returns this vector's Euclidean length.
     ///
     /// ```rust
