@@ -1,5 +1,5 @@
+use crate::components::physics::PhysicsComponent;
 use crate::components::transform::TransformComponent;
-use crate::components::velocity::VelocityComponent;
 use chaos_engine::{ecs::system::ChaosSystem, ecs::world::ChaosWorld};
 pub struct TransformSystem {}
 
@@ -17,11 +17,12 @@ impl ChaosSystem for TransformSystem {
     fn update(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str> {
         let delta_time = world.get_time().delta_time();
         let mut query = world
-            .query::<(&mut TransformComponent, &VelocityComponent)>()
+            .query::<(&mut TransformComponent, &mut PhysicsComponent)>()
             .map_err(|_| "Failed to query transform components")?;
 
-        for (_, (transform, velocity)) in query.iter_mut() {
-            transform.position += velocity.velocity * delta_time;
+        for (_, (transform, physics)) in query.iter_mut() {
+            physics.update(delta_time);
+            transform.position += physics.velocity * delta_time;
         }
 
         Ok(())

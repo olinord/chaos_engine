@@ -7,7 +7,8 @@ use rand::random_range;
 
 use crate::{
     components::{
-        shape::ShapeComponent, transform::TransformComponent, velocity::VelocityComponent,
+        asteroid::Asteroid, physics::PhysicsComponent, shape::ShapeComponent,
+        transform::TransformComponent,
     },
     renderables::asteroid::AsteroidRenderable,
 };
@@ -49,13 +50,14 @@ impl ChaosSystem for AsteroidSystem {
                 world
                     .spawn()
                     .with(TransformComponent::new().with_position(pos))
-                    .with(VelocityComponent::new())
+                    .with(PhysicsComponent::new().with_mass(radius * 1000000f32))
                     .with(ShapeComponent::asteroid(
                         radius,
                         random_range(0.25..0.75),
                         random_range(0..1000) as u32,
                     ))
                     .with(ChaosRenderableContainer::new(AsteroidRenderable::new()))
+                    .with(Asteroid {})
                     .build(),
             );
         }

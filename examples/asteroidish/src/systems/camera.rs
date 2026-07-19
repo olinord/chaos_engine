@@ -6,7 +6,7 @@ use chaos_engine::{
 
 use crate::{
     components::{
-        camera::CameraComponent, transform::TransformComponent, velocity::VelocityComponent,
+        camera::CameraComponent, physics::PhysicsComponent, transform::TransformComponent,
     },
     consts::{DeviceEvent, SpecializedEntities},
 };
@@ -54,7 +54,7 @@ impl ChaosSystem for CameraSystem {
 
         let ship_velocity: Option<Vec2> = world
             .get_specialized_entity_component(SpecializedEntities::Ship)
-            .map(|velocity: &VelocityComponent| velocity.velocity);
+            .map(|physics: &PhysicsComponent| physics.velocity);
 
         let camera_component: Option<&mut CameraComponent> =
             world.get_specialized_entity_component_mut(SpecializedEntities::Camera);

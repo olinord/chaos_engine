@@ -6,9 +6,7 @@ use chaos_engine::{
 };
 
 use crate::{
-    components::{
-        shape::ShapeComponent, transform::TransformComponent, velocity::VelocityComponent,
-    },
+    components::{physics::PhysicsComponent, shape::ShapeComponent, transform::TransformComponent},
     consts::SpecializedEntities,
     renderables::bullet::BulletRenderable,
 };
@@ -91,7 +89,7 @@ impl ChaosSystem for ShipSystem {
         world
             .spawn()
             .with(TransformComponent::new())
-            .with(VelocityComponent::new())
+            .with(PhysicsComponent::new().with_mass(1000f32))
             .with(ShapeComponent::ship())
             .with(ChaosRenderableContainer::new(ShipRenderable::new()))
             .specialized(SpecializedEntities::Ship)
@@ -108,11 +106,10 @@ impl ChaosSystem for ShipSystem {
             return Err("Ship entity not found");
         }
 
-        let (transform_component, velocity_component) = {
-            let query = world
-                .query_for_entity::<(&mut TransformComponent, &mut VelocityComponent)>(
-                    ship_entity.unwrap(),
-                );
+        let (transform_component, physics_component) = {
+            let query = world.query_for_entity::<(&mut TransformComponent, &mut PhysicsComponent)>(
+                ship_entity.unwrap(),
+            );
 
             if query.is_none() {
                 return Err("Failed to query ship components");
@@ -131,23 +128,23 @@ impl ChaosSystem for ShipSystem {
             let thrust_amount = 1.0;
             let thrust =
                 Mat3::rotation(transform_component.rotation) * Vec2::new(0.0, -1.0) * thrust_amount;
-            velocity_component.velocity += thrust * delta_time; // Apply thrust
+            physics_component.velocity += thrust * delta_time; // Apply thrust
         }
         if self.is_breaking() {
             let break_amount = -0.5;
             let thrust = (Mat3::rotation(transform_component.rotation) * Vec2::new(0.0, -1.0))
                 * break_amount;
-            if Vec2::distance_squared(&velocity_component.velocity, &(thrust * delta_time)) < 0.1f32
+            if Vec2::distance_squared(&physics_component.velocity, &(thrust * delta_time)) < 0.1f32
             {
-                velocity_component.velocity = Vec2::new(0.0, 0.0);
+                physics_component.velocity = Vec2::new(0.0, 0.0);
             } else {
-                velocity_component.velocity += thrust * delta_time; // Apply break
+                physics_component.velocity += thrust * delta_time; // Apply break
             }
         }
 
         let ship_position = transform_component.position;
         let ship_rotation = transform_component.rotation;
-        let ship_velocity = velocity_component.velocity;
+        let ship_velocity = physics_component.velocity;
 
         if self.is_firing() {
             let firing_speed = 5.0;
@@ -161,9 +158,11 @@ impl ChaosSystem for ShipSystem {
                     rotation: ship_rotation,
                     scale: Vec2::one(),
                 })
-                .with(VelocityComponent {
-                    velocity: initial_velocity,
-                })
+                .with(
+                    PhysicsComponent::new()
+                        .with_mass(1.0)
+                        .with_velocity(initial_velocity),
+                )
                 .with(ShapeComponent::bullet())
                 .with(ChaosRenderableContainer::new(BulletRenderable::new()))
                 .build();
