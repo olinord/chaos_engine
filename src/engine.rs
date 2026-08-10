@@ -2,10 +2,10 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use crate::{
     device::system::DeviceEventSystem,
-    ecs::{errors::ComponentErrors, world::ChaosWorld},
+    ecs::world::ChaosWorld,
     rendering::{
         effect_factory::EffectFactory,
-        rendering_system::{ChaosRenderContext, ChaosRenderSystem, ChaosRenderableContainer},
+        renderer::{ChaosRenderContext, ChaosRenderer},
     },
 };
 
@@ -22,7 +22,7 @@ pub struct ChaosEngine {
     world: ChaosWorld,
     device_event_system: DeviceEventSystem,
     window: Option<Arc<winit::window::Window>>,
-    pub rendering_system: Option<ChaosRenderSystem>,
+    pub rendering_system: Option<ChaosRenderer>,
     title: String,
     width: u32,
     height: u32,
@@ -55,12 +55,9 @@ impl ChaosEngine {
             event_loop.create_window(window_attributes).unwrap(),
         ));
 
-        let add_subscription = self.world.subscribe_to_add::<ChaosRenderableContainer>();
-
-        let rendering_system = ChaosRenderSystem::new(
+        let rendering_system = ChaosRenderer::new(
             &event_loop.display_handle().unwrap(),
             self.window.clone().unwrap(),
-            add_subscription,
             &self.directories,
         );
         self.rendering_system = Some(rendering_system);
@@ -110,21 +107,14 @@ impl ChaosEngine {
             .as_mut()
             .ok_or("Rendering system is not initialized")?;
 
-        rendering_system.update(&mut self.world);
         let mut buffer_builder = match rendering_system.start_frame() {
             Some(buffer_builder) => buffer_builder,
             None => return Err("Failed to start frame"),
         };
 
-        let renderables = self
-            .world
-            .get_all_components_of_type::<ChaosRenderableContainer>();
-        let renderables = match renderables {
-            Ok(renderables) => renderables,
-            Err(ComponentErrors::ComponentNotFound(_)) => Vec::new(),
-            Err(err) => panic!("failed to get renderable components: {err:?}"),
-        };
-        rendering_system.render(renderables, &mut buffer_builder, &self.world);
+        let draw_queue = self.world.get_draw_queue(rendering_system.render_context());
+
+        rendering_system.render(draw_queue, &mut buffer_builder);
         rendering_system.end_frame(buffer_builder);
         Ok(())
     }
@@ -137,6 +127,12 @@ impl ApplicationHandler for ChaosEngine {
             self.world.initialize_systems().unwrap_or_else(|err| {
                 log::error!("Error initializing systems: {}", err);
             });
+            let render_context = self.render_context().clone();
+            self.world
+                .initialize_render_systems(&render_context)
+                .unwrap_or_else(|err| {
+                    log::error!("Error initializing render systems: {}", err);
+                });
         }
     }
 

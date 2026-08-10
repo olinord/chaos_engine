@@ -1,6 +1,5 @@
 mod components;
 mod consts;
-mod renderables;
 mod systems;
 
 use chaos_engine::device::bindings::{ChaosBindingEvent, ChaosButton, ChaosDeviceEventMatcher};
@@ -80,8 +79,8 @@ fn main() {
     engine
         .world_mut()
         .add_system(TransformSystem::new())
-        .add_system(ShipSystem::new())
-        .add_system(AsteroidSystem::new())
+        .add_render_system(ShipSystem::new())
+        .add_render_system(AsteroidSystem::new())
         .add_system(ImpactSystem::new())
         .add_system(CameraSystem::new(width, height));
 

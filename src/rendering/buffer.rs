@@ -1,9 +1,12 @@
+use std::fmt::Display;
 use std::sync::Arc;
 
+use vulkano::ValidationError;
 use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
+use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter};
 
-use crate::rendering::rendering_system::ChaosRenderContext;
+use crate::rendering::renderer::ChaosRenderContext;
 
 #[derive(Debug, Clone)]
 pub enum ChaosBufferUsage {
@@ -21,6 +24,12 @@ pub enum ChaosBufferUsage {
     AccelerationStructureStorage,
     ShaderBindingTable,
     Invalid,
+}
+
+#[derive(Debug, Clone)]
+pub enum BufferError {
+    ValidationError(Box<ValidationError>),
+    BufferNotBound,
 }
 
 #[derive(Debug, Clone)]
@@ -58,17 +67,17 @@ impl ChaosBuffer {
         }
     }
 
-    pub fn set_data<T: BufferContents>(&mut self, data: Vec<T>) -> Result<(), String> {
+    pub fn set_data_from_vec<T: BufferContents>(&mut self, data: Vec<T>) -> Result<(), String> {
         self.length = data.len();
 
         let buffer = Buffer::from_iter(
             self.render_context.memory_allocator(),
             BufferCreateInfo {
-                usage: self.usage.clone().into(),
+                usage: BufferUsage::from(self.usage.clone()),
                 ..Default::default()
             },
             AllocationCreateInfo {
-                memory_type_filter: self.memory_type_filter.clone().into(),
+                memory_type_filter: MemoryTypeFilter::from(self.memory_type_filter.clone()),
                 ..Default::default()
             },
             data.into_iter(),
@@ -87,8 +96,47 @@ impl ChaosBuffer {
         }
     }
 
+    pub fn set_data<T: BufferContents>(&mut self, data: T) -> Result<(), String> {
+        self.set_data_from_vec(vec![data])
+    }
+
     pub fn buffer(&self) -> Option<Arc<Subbuffer<[u8]>>> {
         self.buffer.clone()
+    }
+
+    pub fn length(&self) -> u32 {
+        self.length as u32
+    }
+
+    pub fn bind_as_index_buffer(
+        &self,
+        command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    ) -> Result<(), BufferError> {
+        if let Some(buffer) = &self.buffer {
+            let buffer = buffer.as_ref().clone().reinterpret::<[u32]>();
+            command_buffer
+                .bind_index_buffer(buffer)
+                .map_err(|e| BufferError::ValidationError(e))?;
+            Ok(())
+        } else {
+            Err(BufferError::BufferNotBound)
+        }
+    }
+
+    pub fn bind_as_vertex_buffer(
+        &self,
+        index: u32,
+        command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    ) -> Result<(), BufferError> {
+        if let Some(buffer) = &self.buffer {
+            let buffer = buffer.as_ref().clone();
+            command_buffer
+                .bind_vertex_buffers(index, buffer)
+                .map_err(|e| BufferError::ValidationError(e))?;
+            Ok(())
+        } else {
+            Err(BufferError::BufferNotBound)
+        }
     }
 }
 
@@ -130,6 +178,15 @@ impl From<ChaosBufferMemoryType> for MemoryTypeFilter {
             }
             ChaosBufferMemoryType::HostSequentialWrite => MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ChaosBufferMemoryType::HostRandomAccess => MemoryTypeFilter::HOST_RANDOM_ACCESS,
+        }
+    }
+}
+
+impl Display for BufferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BufferError::ValidationError(e) => write!(f, "Buffer validation error: {:?}", e),
+            BufferError::BufferNotBound => write!(f, "Buffer not bound"),
         }
     }
 }

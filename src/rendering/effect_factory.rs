@@ -22,7 +22,7 @@ use vulkano::shader::spirv::bytes_to_words;
 use vulkano::shader::{self, EntryPoint, ShaderModule, ShaderModuleCreateInfo};
 
 use crate::rendering::effect::ChaosEffect;
-use crate::rendering::rendering_system::ChaosRenderContext;
+use crate::rendering::renderer::ChaosRenderContext;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ShaderType {

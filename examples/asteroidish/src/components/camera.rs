@@ -1,4 +1,7 @@
-use chaos_engine::math::{Vec2, Vec3, matrix::Mat4};
+use chaos_engine::{
+    BufferContents,
+    math::{Vec2, Vec3, matrix::Mat4},
+};
 pub struct CameraComponent {
     pub eye: Vec3,
     pub target: Vec3,
@@ -7,8 +10,14 @@ pub struct CameraComponent {
     pub fov: f32,
     pub near_clip: f32,
     pub far_clip: f32,
-    pub view_matrix: Mat4,
+    pub gpu_data: GpuCameraData,
+}
+
+#[derive(BufferContents, Clone, Copy)]
+#[repr(C)]
+pub struct GpuCameraData {
     pub projection_matrix: Mat4,
+    pub view_matrix: Mat4,
 }
 
 const DEFAULT_FOV: f32 = std::f32::consts::PI / 2.0;
@@ -27,24 +36,26 @@ impl CameraComponent {
             fov: DEFAULT_FOV,
             near_clip: DEFAULT_NEAR_CLIP,
             far_clip: DEFAULT_FAR_CLIP,
-            view_matrix: Mat4::look_at(
-                &Vec3::new(eye.x, eye.y, DEFAULT_CAMERA_DISTANCE),
-                &Vec3::new(target.x, target.y, RENDERING_PLANE),
-                &Vec3::y_axis(),
-            ),
-            projection_matrix: Mat4::perspective_projection(
-                DEFAULT_FOV,
-                aspect_ratio,
-                DEFAULT_NEAR_CLIP,
-                DEFAULT_FAR_CLIP,
-            ),
+            gpu_data: GpuCameraData {
+                projection_matrix: Mat4::perspective_projection(
+                    DEFAULT_FOV,
+                    aspect_ratio,
+                    DEFAULT_NEAR_CLIP,
+                    DEFAULT_FAR_CLIP,
+                ),
+                view_matrix: Mat4::look_at(
+                    &Vec3::new(eye.x, eye.y, DEFAULT_CAMERA_DISTANCE),
+                    &Vec3::new(target.x, target.y, RENDERING_PLANE),
+                    &Vec3::y_axis(),
+                ),
+            },
         }
     }
 
     pub fn set_aspect_ratio(&mut self, aspect_ratio: f32) {
         self.aspect_ratio = aspect_ratio;
 
-        self.projection_matrix = Mat4::perspective_projection(
+        self.gpu_data.projection_matrix = Mat4::perspective_projection(
             self.fov,
             self.aspect_ratio,
             self.near_clip,
@@ -57,6 +68,10 @@ impl CameraComponent {
         self.target = Vec3::new(target.x, target.y, RENDERING_PLANE);
         self.rotation = rotation;
 
-        self.view_matrix = Mat4::look_at(&self.eye, &self.target, &Vec3::y_axis());
+        self.gpu_data.view_matrix = Mat4::look_at(&self.eye, &self.target, &Vec3::y_axis());
+    }
+
+    pub fn get_gpu_data(&self) -> GpuCameraData {
+        self.gpu_data.clone()
     }
 }

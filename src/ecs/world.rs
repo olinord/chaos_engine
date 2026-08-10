@@ -20,6 +20,10 @@ use crate::{
         query::{QueryError, QueryIter, QueryTuple},
         system::ChaosSystem,
     },
+    rendering::{
+        draw_command::ChaosDrawQueue, renderer::ChaosRenderContext,
+        rendering_system::ChaosRenderSystem,
+    },
     triggers::trigger_event_key::TriggerEventKey,
 };
 
@@ -40,6 +44,7 @@ impl WorldTime {
 pub struct ChaosWorld {
     component_manager: ChaosComponentManager,
     systems: HashMap<TypeId, Box<dyn ChaosSystem>>,
+    render_systems: HashMap<TypeId, Box<dyn ChaosRenderSystem>>,
     specialized_entities: HashMap<SpecializedEntityKey, EntityID>,
     communicator: Arc<Mutex<ChaosCommunicator>>,
     time: WorldTime,
@@ -74,6 +79,7 @@ impl ChaosWorld {
         ChaosWorld {
             component_manager: ChaosComponentManager::new(communicator.clone()),
             systems: HashMap::new(),
+            render_systems: HashMap::new(),
             specialized_entities: HashMap::new(),
             communicator,
             time: WorldTime {
@@ -97,6 +103,30 @@ impl ChaosWorld {
             }
         }
         self.systems = systems;
+
+        let mut render_systems = std::mem::take(&mut self.render_systems);
+        for system in render_systems.values_mut() {
+            if let Err(error) = system.initialize(self) {
+                self.render_systems = render_systems;
+                return Err(error);
+            }
+        }
+        self.render_systems = render_systems;
+        Ok(())
+    }
+
+    pub fn initialize_render_systems(
+        &mut self,
+        ctx: &Arc<ChaosRenderContext>,
+    ) -> Result<(), &'static str> {
+        let mut render_systems = std::mem::take(&mut self.render_systems);
+        for system in render_systems.values_mut() {
+            if let Err(error) = system.initialize_rendering(self, ctx) {
+                self.render_systems = render_systems;
+                return Err(error);
+            }
+        }
+        self.render_systems = render_systems;
         Ok(())
     }
 
@@ -143,6 +173,14 @@ impl ChaosWorld {
         self
     }
 
+    pub fn add_render_system<T: ChaosRenderSystem>(&mut self, system: T) -> &mut Self {
+        log::info!("Adding render system: {}", type_name::<T>());
+
+        self.render_systems
+            .insert(TypeId::of::<T>(), Box::new(system));
+        self
+    }
+
     pub fn update(&mut self) -> Result<(), &'static str> {
         self.time = WorldTime {
             current_time: Instant::now(),
@@ -157,7 +195,30 @@ impl ChaosWorld {
             }
         }
         self.systems = systems;
+        let mut render_systems = std::mem::take(&mut self.render_systems);
+        for system in render_systems.values_mut() {
+            if let Err(error) = system.update(self) {
+                self.render_systems = render_systems;
+                return Err(error);
+            }
+        }
+        self.render_systems = render_systems;
         Ok(())
+    }
+
+    pub fn get_draw_queue(&mut self, ctx: &Arc<ChaosRenderContext>) -> ChaosDrawQueue {
+        let mut draw_queue = ChaosDrawQueue::new();
+
+        let mut render_systems = std::mem::take(&mut self.render_systems);
+
+        for system in render_systems.values_mut() {
+            if let Err(error) = system.prepare_rendering(self, &mut draw_queue, ctx) {
+                log::error!("Error preparing rendering: {}", error);
+            }
+        }
+
+        self.render_systems = render_systems;
+        draw_queue
     }
 
     // creation methods
@@ -261,6 +322,16 @@ impl ChaosWorld {
         F: FnMut(EntityID, Q::Item),
     {
         self.component_manager.for_each::<Q, F>(f)
+    }
+
+    pub fn count<'world, Q>(&'world mut self) -> usize
+    where
+        Q: QueryTuple<'world>,
+    {
+        match self.component_manager.query::<Q>() {
+            Ok(iter) => iter.count(),
+            Err(_) => 0,
+        }
     }
 
     pub fn subscribe_to_add<T: Component>(&mut self) -> ChaosReceiver {

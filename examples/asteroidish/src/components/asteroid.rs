@@ -1,1 +1,1 @@
-pub struct Asteroid {}
+pub struct AsteroidComponent {}

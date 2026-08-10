@@ -1,11 +1,16 @@
 use std::collections::HashMap;
 
-use chaos_engine::math::{Vec2, shape::triangle::Triangle2D};
+use chaos_engine::{
+    log::warn,
+    math::{Vec2, shape::triangle::Triangle2D},
+};
 use noise::{NoiseFn, Perlin};
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 
 pub struct ShapeComponent {
     pub shape: Vec<Triangle2D>,
+    pub vertices: Vec<Vec2>,
+    pub indices: Vec<u32>,
     pub bounding_radius: f32,
 }
 
@@ -24,11 +29,38 @@ impl ShapeComponent {
             .sqrt()
     }
 
-    fn triangulate_polygon(points: &[Vec2]) -> Vec<Triangle2D> {
+    fn compute_vertex_and_index_buffers(shape: &[Triangle2D]) -> (Vec<Vec2>, Vec<u32>) {
+        let vertices = shape
+            .iter()
+            .flat_map(|tri| [tri.a, tri.b, tri.c])
+            .collect::<Vec<Vec2>>();
+
+        let mut dedup_vertices: Vec<Vec2> = vertices.clone();
+        dedup_vertices.dedup();
+
+        let indices: Vec<u32> = shape
+            .iter()
+            .flat_map(|tri| {
+                let a_index = dedup_vertices.iter().position(|&v| v == tri.a).unwrap() as u32;
+                let b_index = dedup_vertices.iter().position(|&v| v == tri.b).unwrap() as u32;
+                let c_index = dedup_vertices.iter().position(|&v| v == tri.c).unwrap() as u32;
+                vec![a_index, b_index, c_index]
+            })
+            .collect();
+
+        (dedup_vertices, indices)
+    }
+
+    // returns a vector of triangles, a vector of vertices, and a vector of indices for rendering
+    fn triangulate_polygon(points: &[Vec2]) -> (Vec<Triangle2D>, Vec<Vec2>, Vec<u32>) {
         let mut triangles = Vec::new();
 
         if points.len() < 3 {
-            return triangles;
+            return (
+                triangles,
+                points.to_vec(),
+                (0..points.len() as u32).collect(),
+            );
         }
 
         let mut classifications: HashMap<usize, (usize, usize, usize)> = (0..points.len())
@@ -119,7 +151,11 @@ impl ShapeComponent {
 
             if !clipped {
                 // Degenerate / self-intersecting input: no ear found.
-                return triangles;
+                warn!(
+                    "Failed to triangulate polygon: no ear found. Input may be degenerate or self-intersecting."
+                );
+                let (vertices, indices) = Self::compute_vertex_and_index_buffers(&triangles);
+                return (triangles, vertices, indices);
             }
         }
 
@@ -130,7 +166,8 @@ impl ShapeComponent {
             triangles.push(Triangle2D::new(points[i0], points[i1], points[i2]));
         }
 
-        triangles
+        let (vertices, indices) = Self::compute_vertex_and_index_buffers(&triangles);
+        (triangles, vertices, indices)
     }
 
     pub fn ship() -> Self {
@@ -140,9 +177,12 @@ impl ShapeComponent {
             Vec2::new(-0.25, 0.35),
         )];
         let bounding_radius = Self::compute_bounding_radius(&shape);
+        let (vertices, indices) = Self::compute_vertex_and_index_buffers(&shape);
         Self {
-            shape,
+            shape: shape.into(),
             bounding_radius,
+            vertices,
+            indices,
         }
     }
 
@@ -210,11 +250,14 @@ impl ShapeComponent {
             shape.push(Vec2::new(r * c, r * s));
         }
 
-        let triangulated = Self::triangulate_polygon(&shape);
-        let bounding_radius = Self::compute_bounding_radius(&triangulated);
+        let (triangles, vertices, indices) = Self::triangulate_polygon(&shape);
+
+        let bounding_radius = Self::compute_bounding_radius(&triangles);
         return Self {
-            shape: triangulated,
+            shape: triangles,
             bounding_radius,
+            vertices,
+            indices,
         };
     }
 
@@ -225,9 +268,13 @@ impl ShapeComponent {
             Vec2::new(-0.05, 0.1),
         )];
         let bounding_radius = Self::compute_bounding_radius(&shape);
+        let (vertices, indices) = Self::compute_vertex_and_index_buffers(&shape);
+
         Self {
-            shape,
+            shape: shape.into(),
             bounding_radius,
+            vertices,
+            indices,
         }
     }
 }

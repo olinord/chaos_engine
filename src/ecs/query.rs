@@ -137,6 +137,14 @@ where
     pub fn iter_mut(&mut self) -> &mut Self {
         self
     }
+
+    pub fn size(&self) -> usize {
+        self.entity_ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entity_ids.is_empty()
+    }
 }
 
 impl<'a, Q> Iterator for QueryIter<'a, Q>
