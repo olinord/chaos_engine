@@ -4,6 +4,8 @@ use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer
 pub enum ChaosRenderPhase {
     Opaque,
     Transparent,
+    // Must stay after Transparent so UI text always draws over UI rects.
+    UiText,
     Additive,
 }
 

@@ -98,12 +98,24 @@ impl ChaosRenderContext {
             .collect();
         state.swapchain = new_swapchain;
         state.image_views = new_image_views;
-        state.viewport = Viewport {
-            offset: [0.0, 0.0],
-            extent: [extent[0] as f32, extent[1] as f32],
-            depth_range: 0.0..=1.0,
-        };
+        state.viewport = flipped_viewport(extent[0] as f32, extent[1] as f32);
         Ok(())
+    }
+}
+
+/// Vulkan's clip-space Y points downward while OpenGL/GLM-style projection
+/// matrices assume Y-up. Using a negative-height viewport tells the rasterizer
+/// to flip Y for us, so callers can keep writing standard perspective /
+/// orthographic matrices without per-shader compensation.
+///
+/// Side effect: front-face winding is inverted. All current pipelines use
+/// `CullMode::None`; any future pipeline that enables back-face culling must
+/// set `FrontFace::Clockwise`.
+fn flipped_viewport(width: f32, height: f32) -> Viewport {
+    Viewport {
+        offset: [0.0, height],
+        extent: [width, -height],
+        depth_range: 0.0..=1.0,
     }
 }
 
@@ -188,11 +200,7 @@ impl ChaosRenderer {
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
         let inner_size = window.inner_size();
-        let viewport = Viewport {
-            offset: [0.0, 0.0],
-            extent: [inner_size.width as f32, inner_size.height as f32],
-            depth_range: 0.0..=1.0,
-        };
+        let viewport = flipped_viewport(inner_size.width as f32, inner_size.height as f32);
         let result = get_swapchain_and_backbuffers(
             physical_device.clone(),
             device.clone(),
@@ -292,8 +300,12 @@ impl ChaosRenderer {
         color_attachment.clear_value = Some(ClearValue::Float([0.0, 0.0, 0.0, 1.0]));
 
         let viewport_extent = self.render_context.viewport().extent;
+        // Framebuffer-space extent is always positive; the viewport uses a
+        // negative height to flip Y (see `flipped_viewport`), which must not
+        // leak into render-area or scissor sizes.
+        let fb_extent = [viewport_extent[0].abs() as u32, viewport_extent[1].abs() as u32];
         let rendering_info = RenderingInfo {
-            render_area_extent: [viewport_extent[0] as u32, viewport_extent[1] as u32],
+            render_area_extent: fb_extent,
             color_attachments: vec![Some(color_attachment)],
             ..Default::default()
         };
@@ -311,7 +323,7 @@ impl ChaosRenderer {
                 0,
                 std::iter::once(Scissor {
                     offset: [0, 0],
-                    extent: [viewport_extent[0] as u32, viewport_extent[1] as u32],
+                    extent: fb_extent,
                 })
                 .collect(),
             )

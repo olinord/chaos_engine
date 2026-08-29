@@ -11,4 +11,11 @@ winit = "0.30.12"
 log = "0.4.11"
 paste = "1.0"
 spirv-reflect = "0.2.3"
+quick-xml = "0.41.0"
+cssparser = "0.37.0"
+taffy = "0.13.0"
+notify = "6"
+notify-debouncer-mini = "0.4"
+fontdue = "0.9"
+
 chaos_communicator={ git="https://github.com/olinord/chaos_communicator", rev="40b9fc5"}

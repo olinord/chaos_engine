@@ -13,3 +13,4 @@ Cargo.lock
 /idea/*.*
 /examples/asteroidish/target
 /old
+/examples/ui_panels/target

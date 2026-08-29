@@ -10,6 +10,7 @@ pub mod logger;
 pub mod math;
 pub mod rendering;
 pub mod triggers;
+pub mod ui;
 pub use vulkano_macros::{BufferContents, Vertex};
 
 pub use chaos_communicator::{

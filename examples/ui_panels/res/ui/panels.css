@@ -1,0 +1,36 @@
+#root {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    gap: 30;
+    background-color: #191922;
+}
+
+.red_panel {
+    flex-grow: 1;
+    background-color: #b11719;
+    border-color: #8d0404;
+    border-width: 2;
+    border-radius: 16;
+    color: #00ff48;
+    font-size: 40;
+}
+
+.red_panel:hover {
+    border-color: #ff0000;
+}
+
+.green_panel {
+    flex-grow: 1;
+    background-color: #17b119;
+    border-color: #006110;
+    border-width: 2;
+    border-radius: 18;
+    color: #b11719;
+    font-size: 50;
+}
+
+.green_panel:hover {
+    border-color: #00ff00;
+}

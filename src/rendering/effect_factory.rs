@@ -8,6 +8,7 @@ use vulkano::device::Device;
 use vulkano::format::Format;
 use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
 use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
+use vulkano::pipeline::graphics::depth_stencil::DepthStencilState;
 use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::RasterizationState;
@@ -74,6 +75,9 @@ pub struct EffectUsage {
     viewports: Vec<Viewport>,
     color_attachment: Option<EffectColorAttachment>,
     primitive_topology: PrimitiveTopology,
+    color_blend_state: Option<ColorBlendState>,
+    depth_stencil_state: Option<DepthStencilState>,
+    rasterization_state: Option<RasterizationState>,
 }
 
 impl EffectUsage {
@@ -83,6 +87,9 @@ impl EffectUsage {
             viewports: Vec::new(),
             color_attachment: None,
             primitive_topology: PrimitiveTopology::TriangleList,
+            color_blend_state: None,
+            depth_stencil_state: None,
+            rasterization_state: None,
         }
     }
 
@@ -98,6 +105,21 @@ impl EffectUsage {
 
     pub fn with_color_attachment(mut self, format: Format, count: u32) -> Self {
         self.color_attachment = Some(EffectColorAttachment { format, count });
+        self
+    }
+
+    pub fn with_color_blend_state(mut self, state: ColorBlendState) -> Self {
+        self.color_blend_state = Some(state);
+        self
+    }
+
+    pub fn with_depth_stencil_state(mut self, state: DepthStencilState) -> Self {
+        self.depth_stencil_state = Some(state);
+        self
+    }
+
+    pub fn with_rasterization_state(mut self, state: RasterizationState) -> Self {
+        self.rasterization_state = Some(state);
         self
     }
 
@@ -448,6 +470,18 @@ impl EffectFactory {
         let mut input_assembly_state = InputAssemblyState::default();
         input_assembly_state.topology = usage.primitive_topology;
 
+        let rasterization_state = usage
+            .rasterization_state
+            .clone()
+            .unwrap_or_else(RasterizationState::default);
+        let color_blend_state = usage.color_blend_state.clone().unwrap_or_else(|| {
+            ColorBlendState::with_attachment_states(
+                color_attachment_count,
+                ColorBlendAttachmentState::default(),
+            )
+        });
+        let depth_stencil_state = usage.depth_stencil_state.clone();
+
         let result = GraphicsPipeline::new(
             render_context.device().clone(),
             None,
@@ -464,9 +498,9 @@ impl EffectFactory {
                     ..Default::default()
                 }),
                 dynamic_state,
-                // Ignore these for now.
-                rasterization_state: Some(RasterizationState::default()),
+                rasterization_state: Some(rasterization_state),
                 multisample_state: Some(MultisampleState::default()),
+                depth_stencil_state,
                 subpass: Some(PipelineSubpassType::BeginRendering(
                     PipelineRenderingCreateInfo {
                         color_attachment_formats: (0..color_attachment_count)
@@ -475,10 +509,7 @@ impl EffectFactory {
                         ..Default::default()
                     },
                 )),
-                color_blend_state: Some(ColorBlendState::with_attachment_states(
-                    color_attachment_count,
-                    ColorBlendAttachmentState::default(),
-                )),
+                color_blend_state: Some(color_blend_state),
                 ..GraphicsPipelineCreateInfo::layout(shader_entry.layout.clone().unwrap())
             },
         );
