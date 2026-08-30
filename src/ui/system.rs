@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use fontdue::Font;
 
+use crate::ChaosMessage;
 use crate::ChaosReceiver;
 use crate::device::events::ChaosInputEvent;
 use crate::ecs::system::ChaosSystem;
@@ -26,7 +27,37 @@ use crate::ui::paint::{
 use crate::ui::runtime::{
     DefaultUiTemplateInstantiator, DirtyFlag, UiTemplate, UiTemplateInstantiator, UiTree,
 };
-use crate::ui::{FontId, default_font};
+use crate::ui::{FontId, NodeId, default_font};
+
+/// Callbacks registered by action name. On each UI event the corresponding
+/// `on-<event>-event` attribute is looked up on the target node; if the value
+/// matches a registered action the closure is invoked and any returned
+/// [`ChaosMessage`] is sent into the world.
+///
+/// Supported attributes: `on-click-event`, `on-hover-event`, `on-hover-leave-event`,
+/// `on-focus-event`, `on-blur-event`, `on-change-event`.
+pub struct BindingRegistry(
+    HashMap<String, Box<dyn Fn(&UiEvent) -> Option<ChaosMessage> + Send + Sync + 'static>>,
+);
+
+impl Default for BindingRegistry {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
+}
+
+impl BindingRegistry {
+    pub fn register<F>(&mut self, action: impl Into<String>, f: F)
+    where
+        F: Fn(&UiEvent) -> Option<ChaosMessage> + Send + Sync + 'static,
+    {
+        self.0.insert(action.into(), Box::new(f));
+    }
+
+    fn dispatch(&self, action: &str, event: &UiEvent) -> Option<ChaosMessage> {
+        self.0.get(action).and_then(|f| f(event))
+    }
+}
 
 /// Owns the UI tree and drives its per-frame passes
 /// (Structure → Style → Layout → Paint) plus GPU submission.
@@ -63,6 +94,7 @@ where
     hot_reload: Option<HotReloadState>,
     /// Fonts registered before GPU init; seeded into the backend and layout engine.
     fonts: HashMap<FontId, Font>,
+    bindings: BindingRegistry,
 }
 
 /// State kept by [`UiSystem`] while hot-reload is active. The `_guard` keeps
@@ -124,6 +156,7 @@ where
             paint_dirty: true,
             hot_reload: None,
             fonts: HashMap::new(),
+            bindings: BindingRegistry::default(),
         }
     }
 
@@ -178,6 +211,61 @@ where
     /// Consume any pending UI events queued for downstream systems.
     pub fn drain_events(&mut self) -> Vec<UiEvent> {
         std::mem::take(&mut self.event_queue)
+    }
+
+    /// Register a closure to be invoked when a node's event-attribute matches
+    /// `action`. The closure receives the event and may return a [`ChaosMessage`]
+    /// sent via the world communicator.
+    pub fn register_binding<F>(&mut self, action: impl Into<String>, f: F)
+    where
+        F: Fn(&UiEvent) -> Option<ChaosMessage> + Send + Sync + 'static,
+    {
+        self.bindings.register(action, f);
+    }
+
+    fn dispatch_bindings(&self, world: &mut ChaosWorld) {
+        for event in &self.event_queue {
+            let node = Self::node_for_event(event);
+            let Some(attr) = Self::event_attribute(event) else {
+                continue;
+            };
+            let Some(action) = self
+                .tree
+                .nodes
+                .get(&node)
+                .and_then(|n| n.attributes.get(attr))
+            else {
+                continue;
+            };
+            if let Some(msg) = self.bindings.dispatch(action, event) {
+                if let Err(e) = world.try_send_message(msg) {
+                    log::warn!("UiSystem: binding '{}' failed to send: {e}", action);
+                }
+            }
+        }
+    }
+
+    /// Maps each [`UiEvent`] variant to the markup attribute that enables it.
+    fn event_attribute(event: &UiEvent) -> Option<&'static str> {
+        match event {
+            UiEvent::Click { .. } => Some("on-click-event"),
+            UiEvent::PointerEnter { .. } => Some("on-hover-event"),
+            UiEvent::PointerLeave { .. } => Some("on-hover-leave-event"),
+            UiEvent::FocusGained { .. } => Some("on-focus-event"),
+            UiEvent::FocusLost { .. } => Some("on-blur-event"),
+            UiEvent::ValueChanged { .. } => Some("on-change-event"),
+        }
+    }
+
+    fn node_for_event(event: &UiEvent) -> NodeId {
+        match event {
+            UiEvent::Click { node }
+            | UiEvent::PointerEnter { node }
+            | UiEvent::PointerLeave { node }
+            | UiEvent::FocusGained { node }
+            | UiEvent::FocusLost { node } => *node,
+            UiEvent::ValueChanged { node, .. } => *node,
+        }
     }
 
     /// Start watching the given markup + stylesheet files. Whenever either
@@ -427,10 +515,11 @@ where
         Ok(())
     }
 
-    fn update(&mut self, _world: &mut ChaosWorld) -> Result<(), &'static str> {
+    fn update(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str> {
         self.drain_hot_reload();
         self.drain_resize_events();
         self.drain_input_events();
+        self.dispatch_bindings(world);
         self.run_passes().map_err(|e| {
             log::error!("UiSystem update failed: {e}");
             "ui system update failed"

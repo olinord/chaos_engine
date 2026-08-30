@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use chaos_engine::ChaosMessageBuilder;
 use chaos_engine::device::bindings::{
     ChaosBindingEvent, ChaosButton, ChaosDeviceEventMatcher, ChaosInputEventMatcher,
 };
@@ -22,7 +23,7 @@ fn main() {
     let _ = log::set_logger(&ChaosLogger {});
 
     let width = 1024u32;
-    let height = 768u32;
+    let height = 1024u32;
 
     let mut engine = ChaosEngine::new("UI Panels", width, height).expect("failed to init engine");
 
@@ -87,6 +88,15 @@ fn main() {
         log::warn!("hot-reload disabled: {e}");
     }
 
+    ui_system.register_binding("toggle_pause", |_event| {
+        log::info!("toggle_pause action fired");
+        Some(
+            ChaosMessageBuilder::new()
+                .with_param("action", "toggle_pause".to_string())
+                .build_for_event("toggle_pause"),
+        )
+    });
+
     engine.world_mut().add_render_system(ui_system);
 
     engine.run();
@@ -136,11 +146,16 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(texts.len(), 4, "expected one Text command per panel");
+        assert_eq!(
+            texts.len(),
+            5,
+            "expected one Text command per panel plus the button"
+        );
         assert!(texts.contains(&"Panel A"));
         assert!(texts.contains(&"Panel B"));
         assert!(texts.contains(&"Panel C"));
         assert!(texts.contains(&"Panel D"));
+        assert!(texts.contains(&"Pause"));
     }
 
     #[test]
@@ -174,7 +189,7 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(text_widths.len(), 4, "expected four Text nodes in the tree");
+        assert_eq!(text_widths.len(), 5, "expected five Text nodes in the tree");
         for w in &text_widths {
             assert!(*w > 0.0, "text node width should be positive, got {w}");
         }

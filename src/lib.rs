@@ -15,5 +15,5 @@ pub use vulkano_macros::{BufferContents, Vertex};
 
 pub use chaos_communicator::{
     communicator::{ChaosCommunicationError, ChaosCommunicator, ChaosReceiver},
-    message::ChaosMessage,
+    message::{ChaosMessage, ChaosMessageBuilder},
 };

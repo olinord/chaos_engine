@@ -34,3 +34,27 @@
 .green_panel:hover {
     border-color: #00ff00;
 }
+
+button {
+    background-color: #2a2a3a;
+    border-color: #5555aa;
+    border-width: 2;
+    border-radius: 8;
+    color: #ddddff;
+    font-size: 32;
+    margin-left: 20%;
+    margin-top: 20%;
+    margin-right: 20%;
+    height: 10%;
+    padding: 8px;
+}
+
+button:hover {
+    background-color: #3a3a5a;
+    border-color: #8888ff;
+}
+
+button:active {
+    background-color: #1a1a2a;
+    border-color: #aaaaff;
+}

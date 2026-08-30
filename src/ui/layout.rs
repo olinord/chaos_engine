@@ -484,7 +484,7 @@ mod tests {
     fn padding_shrinks_content_box() {
         let markup = r#"<ui id="root"/>"#;
         let css = r#"
-            #root { width: 200px; height: 100px; padding: 10px, 20px, 30px, 40px; }
+            #root { width: 200px; height: 100px; padding: 10px 20px 30px 40px; }
         "#;
         let mut tree = instantiate(markup, css);
         let mut engine = UiLayoutEngine::new();

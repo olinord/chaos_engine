@@ -64,48 +64,35 @@ impl UiEventRouter {
                 let hit = Self::hit_test(paint_list, tree, pos);
                 let prev = tree.hovered_node;
                 if prev != hit {
+                    let old_chain = Self::ancestor_chain(tree, prev);
+                    let new_chain = Self::ancestor_chain(tree, hit);
+                    Self::update_pseudo_chain(
+                        tree,
+                        &old_chain,
+                        &new_chain,
+                        PseudoState::Hover,
+                    );
+                    tree.hovered_node = hit;
                     if let Some(old) = prev {
-                        if let Some(n) = tree.nodes.get_mut(&old) {
-                            n.state.pseudo_states.remove(&PseudoState::Hover);
-                            n.dirty.insert(DirtyFlag::Style);
-                        }
                         out_events.push(UiEvent::PointerLeave { node: old });
                     }
-                    tree.hovered_node = hit;
                     if let Some(new) = hit {
-                        if let Some(n) = tree.nodes.get_mut(&new) {
-                            n.state.pseudo_states.insert(PseudoState::Hover);
-                            n.dirty.insert(DirtyFlag::Style);
-                        }
                         out_events.push(UiEvent::PointerEnter { node: new });
                     }
                 }
             }
             UiInputEvent::PointerDown { pos, button: _ } => {
                 let hit = Self::hit_test(paint_list, tree, pos);
-                if let Some(old) = tree.active_node {
-                    if let Some(n) = tree.nodes.get_mut(&old) {
-                        n.state.pseudo_states.remove(&PseudoState::Active);
-                        n.dirty.insert(DirtyFlag::Style);
-                    }
-                }
+                let old_chain = Self::ancestor_chain(tree, tree.active_node);
+                let new_chain = Self::ancestor_chain(tree, hit);
+                Self::update_pseudo_chain(tree, &old_chain, &new_chain, PseudoState::Active);
                 tree.active_node = hit;
-                if let Some(new) = hit {
-                    if let Some(n) = tree.nodes.get_mut(&new) {
-                        n.state.pseudo_states.insert(PseudoState::Active);
-                        n.dirty.insert(DirtyFlag::Style);
-                    }
-                }
             }
             UiInputEvent::PointerUp { pos, button: _ } => {
                 let hit = Self::hit_test(paint_list, tree, pos);
                 let press_target = tree.active_node;
-                if let Some(old) = press_target {
-                    if let Some(n) = tree.nodes.get_mut(&old) {
-                        n.state.pseudo_states.remove(&PseudoState::Active);
-                        n.dirty.insert(DirtyFlag::Style);
-                    }
-                }
+                let old_chain = Self::ancestor_chain(tree, press_target);
+                Self::update_pseudo_chain(tree, &old_chain, &[], PseudoState::Active);
                 tree.active_node = None;
                 if let (Some(hit_id), Some(press_id)) = (hit, press_target) {
                     if hit_id == press_id {
@@ -142,6 +129,51 @@ impl UiEventRouter {
             | UiInputEvent::Scroll { .. } => {}
         }
         Ok(())
+    }
+
+    /// Return the target node and each of its ancestors, in that order.
+    /// `None` targets produce an empty vector. The chain matches CSS `:hover`
+    /// / `:active` semantics: a pseudo-state on the topmost node also applies
+    /// to every ancestor.
+    pub fn ancestor_chain(tree: &UiTree, target: Option<NodeId>) -> Vec<NodeId> {
+        let mut chain = Vec::new();
+        let mut cur = target;
+        while let Some(id) = cur {
+            chain.push(id);
+            cur = tree.nodes.get(&id).and_then(|n| n.parent);
+        }
+        chain
+    }
+
+    /// Diff two ancestor chains and toggle `state` accordingly: clear it on
+    /// nodes only in `old_chain`, set it on nodes only in `new_chain`. Marks
+    /// each changed node `Style`-dirty.
+    fn update_pseudo_chain(
+        tree: &mut UiTree,
+        old_chain: &[NodeId],
+        new_chain: &[NodeId],
+        state: PseudoState,
+    ) {
+        for &id in old_chain {
+            if new_chain.contains(&id) {
+                continue;
+            }
+            if let Some(n) = tree.nodes.get_mut(&id) {
+                if n.state.pseudo_states.remove(&state) {
+                    n.dirty.insert(DirtyFlag::Style);
+                }
+            }
+        }
+        for &id in new_chain {
+            if old_chain.contains(&id) {
+                continue;
+            }
+            if let Some(n) = tree.nodes.get_mut(&id) {
+                if n.state.pseudo_states.insert(state) {
+                    n.dirty.insert(DirtyFlag::Style);
+                }
+            }
+        }
     }
 
     /// Walk the paint list in reverse (last drawn = topmost) and return the
@@ -382,5 +414,263 @@ mod tests {
                 .contains(&PseudoState::Active)
         );
         assert!(tree.active_node.is_none());
+    }
+
+    // ---------- ancestor propagation of :hover and :active ----------
+
+    /// Build a `panel > button` tree that mirrors the panel/button layout
+    /// in `examples/ui_panels`. Returns `(tree, panel_id, button_id, paint_list)`.
+    /// The panel spans (0,0,200,200) and the button (50,50,100,100).
+    fn nested_panel_button() -> (UiTree, NodeId, NodeId, PaintList) {
+        let mut panel = make_node(1, 0.0, 0.0, 200.0, 200.0, true);
+        panel.children = vec![2];
+        let mut button = make_node(2, 50.0, 50.0, 100.0, 100.0, true);
+        button.parent = Some(1);
+
+        let tree = make_tree(vec![panel, button]);
+        let paint_list = PaintList {
+            commands: vec![
+                rect_cmd(1, 0.0, 0.0, 200.0, 200.0),
+                rect_cmd(2, 50.0, 50.0, 100.0, 100.0),
+            ],
+        };
+        (tree, 1, 2, paint_list)
+    }
+
+    fn has_state(tree: &UiTree, id: NodeId, state: PseudoState) -> bool {
+        tree.nodes[&id].state.pseudo_states.contains(&state)
+    }
+
+    /// Regression: hovering a nested button must also mark the parent panel
+    /// as `:hover`. Previously only the topmost hit received the state.
+    #[test]
+    fn hover_over_child_propagates_to_parent() {
+        let (mut tree, panel, button, paint_list) = nested_panel_button();
+        let mut events = vec![];
+
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerMove(PointerPos { x: 100.0, y: 100.0 }),
+            &mut events,
+        )
+        .unwrap();
+
+        assert!(has_state(&tree, button, PseudoState::Hover));
+        assert!(has_state(&tree, panel, PseudoState::Hover));
+        assert_eq!(tree.hovered_node, Some(button));
+    }
+
+    /// Moving from the parent's empty area onto the child keeps the parent's
+    /// hover state (both are hovered) and adds it to the child.
+    #[test]
+    fn moving_from_parent_body_onto_child_keeps_parent_hover() {
+        let (mut tree, panel, button, paint_list) = nested_panel_button();
+        let mut events = vec![];
+
+        // Land on the panel body first (outside button bounds).
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerMove(PointerPos { x: 10.0, y: 10.0 }),
+            &mut events,
+        )
+        .unwrap();
+        assert!(has_state(&tree, panel, PseudoState::Hover));
+        assert!(!has_state(&tree, button, PseudoState::Hover));
+        let dirty_before = tree.nodes[&panel].dirty.contains(&DirtyFlag::Style);
+        assert!(dirty_before);
+        tree.node_mut(panel).unwrap().dirty.clear();
+
+        // Now move onto the child. Parent should stay hovered *without*
+        // needing to re-emit a Style dirty flag, since its state didn't flip.
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerMove(PointerPos { x: 100.0, y: 100.0 }),
+            &mut events,
+        )
+        .unwrap();
+        assert!(has_state(&tree, panel, PseudoState::Hover));
+        assert!(has_state(&tree, button, PseudoState::Hover));
+        assert!(
+            !tree.nodes[&panel].dirty.contains(&DirtyFlag::Style),
+            "parent should not be re-dirtied when its hover state does not change",
+        );
+    }
+
+    /// Moving from the child back into the parent's body clears the child's
+    /// hover state but preserves the parent's.
+    #[test]
+    fn moving_from_child_back_to_parent_body_only_clears_child() {
+        let (mut tree, panel, button, paint_list) = nested_panel_button();
+        let mut events = vec![];
+
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerMove(PointerPos { x: 100.0, y: 100.0 }),
+            &mut events,
+        )
+        .unwrap();
+        assert!(has_state(&tree, button, PseudoState::Hover));
+        assert!(has_state(&tree, panel, PseudoState::Hover));
+
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerMove(PointerPos { x: 10.0, y: 10.0 }),
+            &mut events,
+        )
+        .unwrap();
+        assert!(!has_state(&tree, button, PseudoState::Hover));
+        assert!(has_state(&tree, panel, PseudoState::Hover));
+        assert_eq!(tree.hovered_node, Some(panel));
+    }
+
+    /// Moving the pointer entirely outside the panel clears hover on both
+    /// child and parent.
+    #[test]
+    fn moving_pointer_off_tree_clears_hover_on_entire_chain() {
+        let (mut tree, panel, button, paint_list) = nested_panel_button();
+        let mut events = vec![];
+
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerMove(PointerPos { x: 100.0, y: 100.0 }),
+            &mut events,
+        )
+        .unwrap();
+        assert!(has_state(&tree, button, PseudoState::Hover));
+        assert!(has_state(&tree, panel, PseudoState::Hover));
+
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerMove(PointerPos { x: 500.0, y: 500.0 }),
+            &mut events,
+        )
+        .unwrap();
+        assert!(!has_state(&tree, button, PseudoState::Hover));
+        assert!(!has_state(&tree, panel, PseudoState::Hover));
+        assert_eq!(tree.hovered_node, None);
+    }
+
+    /// Moving between sibling children of the same parent should only toggle
+    /// hover on the children; the shared parent's state must stay stable.
+    #[test]
+    fn moving_between_siblings_keeps_shared_parent_hovered() {
+        // parent(1) contains sibling_a(2) and sibling_b(3).
+        let mut parent = make_node(1, 0.0, 0.0, 300.0, 100.0, true);
+        parent.children = vec![2, 3];
+        let mut a = make_node(2, 10.0, 10.0, 80.0, 80.0, true);
+        a.parent = Some(1);
+        let mut b = make_node(3, 200.0, 10.0, 80.0, 80.0, true);
+        b.parent = Some(1);
+        let mut tree = make_tree(vec![parent, a, b]);
+        let paint_list = PaintList {
+            commands: vec![
+                rect_cmd(1, 0.0, 0.0, 300.0, 100.0),
+                rect_cmd(2, 10.0, 10.0, 80.0, 80.0),
+                rect_cmd(3, 200.0, 10.0, 80.0, 80.0),
+            ],
+        };
+        let mut events = vec![];
+
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerMove(PointerPos { x: 50.0, y: 50.0 }),
+            &mut events,
+        )
+        .unwrap();
+        assert!(has_state(&tree, 2, PseudoState::Hover));
+        assert!(has_state(&tree, 1, PseudoState::Hover));
+        tree.node_mut(1).unwrap().dirty.clear();
+
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerMove(PointerPos { x: 240.0, y: 50.0 }),
+            &mut events,
+        )
+        .unwrap();
+        assert!(!has_state(&tree, 2, PseudoState::Hover));
+        assert!(has_state(&tree, 3, PseudoState::Hover));
+        assert!(has_state(&tree, 1, PseudoState::Hover));
+        assert!(
+            !tree.nodes[&1].dirty.contains(&DirtyFlag::Style),
+            "shared parent should not be re-dirtied when its hover state does not change",
+        );
+    }
+
+    /// Only PointerEnter/PointerLeave for the direct topmost node are emitted;
+    /// ancestor state changes are silent to keep event streams predictable.
+    #[test]
+    fn hover_propagation_does_not_emit_extra_enter_leave_events() {
+        let (mut tree, _panel, button, paint_list) = nested_panel_button();
+        let mut events = vec![];
+
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerMove(PointerPos { x: 100.0, y: 100.0 }),
+            &mut events,
+        )
+        .unwrap();
+
+        let enters: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, UiEvent::PointerEnter { .. }))
+            .collect();
+        assert_eq!(enters.len(), 1);
+        assert!(matches!(enters[0], UiEvent::PointerEnter { node } if *node == button));
+    }
+
+    /// Pressing on a nested child also marks the parent as `:active` so a
+    /// parent's `:active` rule can respond to clicks originating in children.
+    #[test]
+    fn pointer_down_on_child_propagates_active_to_parent() {
+        let (mut tree, panel, button, paint_list) = nested_panel_button();
+        let mut events = vec![];
+        let btn = winit::event::MouseButton::Left;
+
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerDown {
+                pos: PointerPos { x: 100.0, y: 100.0 },
+                button: btn,
+            },
+            &mut events,
+        )
+        .unwrap();
+        assert!(has_state(&tree, button, PseudoState::Active));
+        assert!(has_state(&tree, panel, PseudoState::Active));
+
+        UiEventRouter::dispatch_input(
+            &mut tree,
+            &paint_list,
+            UiInputEvent::PointerUp {
+                pos: PointerPos { x: 100.0, y: 100.0 },
+                button: btn,
+            },
+            &mut events,
+        )
+        .unwrap();
+        assert!(!has_state(&tree, button, PseudoState::Active));
+        assert!(!has_state(&tree, panel, PseudoState::Active));
+    }
+
+    /// The chain helper walks the full parent chain up to the root.
+    #[test]
+    fn ancestor_chain_walks_from_target_to_root() {
+        let (tree, panel, button, _paint_list) = nested_panel_button();
+        let chain = UiEventRouter::ancestor_chain(&tree, Some(button));
+        assert_eq!(chain, vec![button, panel]);
+
+        let empty = UiEventRouter::ancestor_chain(&tree, None);
+        assert!(empty.is_empty());
     }
 }

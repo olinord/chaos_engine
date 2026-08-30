@@ -1,6 +1,5 @@
 <ui id="root">
     <ui class="red_panel">Panel A</ui>
-    <ui class="green_panel">Panel B</ui>
-    <ui class="red_panel">Panel C</ui>
-    <ui class="green_panel">Panel D</ui>
+    <ui class="green_panel"> <button on-click-event="toggle_pause" tabindex="0">Pause</button></ui>
+   
 </ui>

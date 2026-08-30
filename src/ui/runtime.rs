@@ -446,7 +446,9 @@ fn apply_declaration(style: &mut ComputedStyle, value: StyleValue) {
         StyleValue::MaxWidth(v) => style.max_width = v,
         StyleValue::MaxHeight(v) => style.max_height = v,
         StyleValue::Margin(v) => style.margin = v,
+        StyleValue::MarginSide(side, v) => style.margin[side as usize] = v,
         StyleValue::Padding(v) => style.padding = v,
+        StyleValue::PaddingSide(side, v) => style.padding[side as usize] = v,
         StyleValue::Gap(v) => style.gap = v,
         StyleValue::FlexDirection(v) => style.flex_direction = v,
         StyleValue::FlexGrow(v) => style.flex_grow = v,
@@ -1087,5 +1089,120 @@ mod tests {
         let root = tree.node(tree.root).unwrap();
         let inline = root.inline_style.as_ref().expect("inline style copied");
         assert_eq!(inline.len(), 1);
+    }
+
+    // ---------- box shorthand + directional overrides ----------
+
+    fn tree_with_root_only() -> (UiTree, NodeId) {
+        let mut tree = UiTree::new();
+        let id = tree.alloc_id();
+        let mut node = make_node(id, UiTag::UI);
+        node.dirty.insert(DirtyFlag::Style);
+        tree.nodes.insert(id, node);
+        tree.root = id;
+        (tree, id)
+    }
+
+    #[test]
+    fn margin_shorthand_populates_all_four_sides() {
+        let (mut tree, id) = tree_with_root_only();
+        let sheet = UiStyleSheetAst::from_stylesheet("ui { margin: 1px 2px 3px 4px; }").unwrap();
+        tree.apply_style(&sheet).unwrap();
+        assert_eq!(
+            tree.node(id).unwrap().computed_style.margin,
+            [
+                Length::Px(1.0),
+                Length::Px(2.0),
+                Length::Px(3.0),
+                Length::Px(4.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn padding_shorthand_populates_all_four_sides() {
+        let (mut tree, id) = tree_with_root_only();
+        let sheet = UiStyleSheetAst::from_stylesheet("ui { padding: 5px 10px; }").unwrap();
+        tree.apply_style(&sheet).unwrap();
+        assert_eq!(
+            tree.node(id).unwrap().computed_style.padding,
+            [
+                Length::Px(5.0),
+                Length::Px(10.0),
+                Length::Px(5.0),
+                Length::Px(10.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn margin_side_property_updates_only_target_side() {
+        let (mut tree, id) = tree_with_root_only();
+        let sheet = UiStyleSheetAst::from_stylesheet(
+            "ui { margin-top: 7px; margin-right: 8px; margin-bottom: 9px; margin-left: 10px; }",
+        )
+        .unwrap();
+        tree.apply_style(&sheet).unwrap();
+        assert_eq!(
+            tree.node(id).unwrap().computed_style.margin,
+            [
+                Length::Px(7.0),
+                Length::Px(8.0),
+                Length::Px(9.0),
+                Length::Px(10.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn padding_side_property_updates_only_target_side() {
+        let (mut tree, id) = tree_with_root_only();
+        let sheet = UiStyleSheetAst::from_stylesheet(
+            "ui { padding-top: 7px; padding-right: 8px; padding-bottom: 9px; padding-left: 10px; }",
+        )
+        .unwrap();
+        tree.apply_style(&sheet).unwrap();
+        assert_eq!(
+            tree.node(id).unwrap().computed_style.padding,
+            [
+                Length::Px(7.0),
+                Length::Px(8.0),
+                Length::Px(9.0),
+                Length::Px(10.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn margin_side_overrides_shorthand_when_declared_later() {
+        // Standard CSS cascade: a later directional declaration overrides
+        // the shorthand's contribution for that side, and only that side.
+        let (mut tree, id) = tree_with_root_only();
+        let sheet =
+            UiStyleSheetAst::from_stylesheet("ui { margin: 5px; margin-left: 25px; }").unwrap();
+        tree.apply_style(&sheet).unwrap();
+        assert_eq!(
+            tree.node(id).unwrap().computed_style.margin,
+            [
+                Length::Px(5.0),
+                Length::Px(5.0),
+                Length::Px(5.0),
+                Length::Px(25.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn shorthand_after_side_resets_all_sides() {
+        // Inverse cascade: shorthand declared *after* directional overrides
+        // resets every side, matching real CSS.
+        let (mut tree, id) = tree_with_root_only();
+        let sheet =
+            UiStyleSheetAst::from_stylesheet("ui { padding-left: 99px; padding: 4px; }").unwrap();
+        tree.apply_style(&sheet).unwrap();
+        assert_eq!(
+            tree.node(id).unwrap().computed_style.padding,
+            [Length::Px(4.0); 4]
+        );
     }
 }
