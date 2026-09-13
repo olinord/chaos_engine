@@ -36,6 +36,8 @@ use crate::rendering::{
     swapchain::get_swapchain_and_backbuffers,
 };
 
+use crate::frame_zone;
+
 pub type Fence = FenceSignalFuture<
     PresentFuture<CommandBufferExecFuture<JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture>>>,
 >;
@@ -303,7 +305,10 @@ impl ChaosRenderer {
         // Framebuffer-space extent is always positive; the viewport uses a
         // negative height to flip Y (see `flipped_viewport`), which must not
         // leak into render-area or scissor sizes.
-        let fb_extent = [viewport_extent[0].abs() as u32, viewport_extent[1].abs() as u32];
+        let fb_extent = [
+            viewport_extent[0].abs() as u32,
+            viewport_extent[1].abs() as u32,
+        ];
         let rendering_info = RenderingInfo {
             render_area_extent: fb_extent,
             color_attachments: vec![Some(color_attachment)],
@@ -341,6 +346,7 @@ impl ChaosRenderer {
         draw_queue
             .sort_by_key(|draw_command| (draw_command.render_phase, draw_command.effect_hash));
         for draw_command in draw_queue {
+            frame_zone!("render draw command");
             (draw_command.draw_function)(buffer_builder).unwrap();
         }
     }
@@ -397,38 +403,6 @@ impl ChaosRenderer {
         self.current_buffer = image_i;
         self.current_frame = self.current_frame.wrapping_add(1);
     }
-
-    // pub fn update(&mut self, world: &ChaosWorld) {
-    //     // initialize the added components
-    //     // and update the existing components
-    //     let mut added_entity_ids: HashSet<EntityID> = HashSet::new();
-    //     loop {
-    //         let message = self.add_render_component.receive();
-    //         if message.is_none() {
-    //             break;
-    //         }
-    //         let message = message.unwrap();
-    //         let entity_id: EntityID = message.get("entity_id").unwrap();
-    //         added_entity_ids.insert(entity_id);
-    //     }
-
-    //     let all_renderables = world
-    //         .get_all_components_of_type::<ChaosRenderableContainer>()
-    //         .unwrap();
-
-    //     for (entity_id, renderable) in all_renderables {
-    //         let mut renderable = renderable.renderable.borrow_mut();
-    //         if added_entity_ids.contains(&entity_id) {
-    //             renderable
-    //                 .initialize(world, entity_id, &self.render_context.clone())
-    //                 .unwrap();
-    //         }
-
-    //         renderable
-    //             .update(world, entity_id, &self.render_context.clone())
-    //             .unwrap();
-    //     }
-    // }
 
     pub fn render_context(&self) -> &Arc<ChaosRenderContext> {
         &self.render_context

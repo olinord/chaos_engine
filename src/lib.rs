@@ -9,6 +9,7 @@ pub mod engine;
 pub mod logger;
 pub mod math;
 pub mod rendering;
+pub mod telemetry;
 pub mod triggers;
 pub mod ui;
 pub use vulkano_macros::{BufferContents, Vertex};

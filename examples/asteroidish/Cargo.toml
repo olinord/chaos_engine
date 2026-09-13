@@ -16,3 +16,6 @@ array_tool = "1.0.0"
 noise = "0.9" 
 rand = "0.10.2"
 vulkano = {version = "0.35.2", default-features = true}
+
+[features]
+profiling = ["chaos_engine/profiling"]

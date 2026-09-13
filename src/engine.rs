@@ -7,6 +7,7 @@ use crate::{
         effect_factory::EffectFactory,
         renderer::{ChaosRenderContext, ChaosRenderer},
     },
+    trace_zone,
 };
 
 use winit::{
@@ -31,6 +32,7 @@ pub struct ChaosEngine {
 
 impl ChaosEngine {
     pub fn new(title: &str, width: u32, height: u32) -> Result<ChaosEngine, &'static str> {
+        crate::telemetry::init();
         let device_event_system = DeviceEventSystem::new();
 
         Ok(ChaosEngine {
@@ -93,6 +95,7 @@ impl ChaosEngine {
     }
 
     fn update(&mut self, event: &WindowEvent) -> Result<(), &'static str> {
+        trace_zone!("engine update");
         for message in self.device_event_system.update(event) {
             if let Err(error) = self.world.try_send_message(message) {
                 log::debug!("Input signal was not delivered: {} {:?}", error, event);
@@ -102,6 +105,7 @@ impl ChaosEngine {
     }
 
     fn render(&mut self) -> Result<(), &'static str> {
+        trace_zone!("engine render");
         let rendering_system = self
             .rendering_system
             .as_mut()
