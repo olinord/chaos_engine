@@ -14,3 +14,5 @@ Cargo.lock
 /examples/asteroidish/target
 /old
 /examples/ui_panels/target
+/plan
+**/.DS_Store
