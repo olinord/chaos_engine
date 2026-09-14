@@ -103,6 +103,56 @@ impl UiTree {
         self.nodes.get_mut(&id)
     }
 
+    /// Find the first node whose `id` markup attribute matches `id`.
+    pub fn find_by_id_attr(&self, id: &str) -> Option<NodeId> {
+        self.nodes
+            .iter()
+            .find(|(_, n)| n.id_attr.as_deref() == Some(id))
+            .map(|(&node_id, _)| node_id)
+    }
+
+    /// Replace a `Text` node's content, forcing a re-measure and repaint.
+    /// Returns `false` if the node doesn't exist or isn't a `Text` node.
+    pub fn set_text(&mut self, node: NodeId, text: impl Into<String>) -> bool {
+        let Some(n) = self.nodes.get_mut(&node) else {
+            return false;
+        };
+        match &mut n.tag {
+            UiTag::Text(content) => {
+                *content = text.into();
+                n.dirty.insert(DirtyFlag::Layout);
+                n.dirty.insert(DirtyFlag::Paint);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Set the text of the node whose `id` markup attribute matches `id`. Markup
+    /// like `<ui id="x">Hello</ui>` wraps its inline text in a child `Text`
+    /// node, so if the matched node itself isn't `Text`, its first `Text`
+    /// child is updated instead. Returns `false` if no matching text was found.
+    pub fn set_text_by_id(&mut self, id: &str, text: impl Into<String>) -> bool {
+        let text = text.into();
+        let Some(node_id) = self.find_by_id_attr(id) else {
+            return false;
+        };
+        if self.set_text(node_id, text.clone()) {
+            return true;
+        }
+        let children = self
+            .nodes
+            .get(&node_id)
+            .map(|n| n.children.clone())
+            .unwrap_or_default();
+        for child_id in children {
+            if self.set_text(child_id, text.clone()) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Attach `node` under `parent`. The caller owns id allocation via
     /// `alloc_id`. Marks `Structure` on the parent, `Layout` on existing
     /// siblings, and `Style`+`Layout` on the new subtree.

@@ -5,9 +5,12 @@ use chaos_engine::device::bindings::{
     ChaosBindingEvent, ChaosButton, ChaosDeviceEventMatcher, ChaosInputEventMatcher,
 };
 use chaos_engine::device::events::ChaosMouseButton;
+use chaos_engine::ecs::system::ChaosSystem;
+use chaos_engine::ecs::world::ChaosWorld;
 use chaos_engine::engine::ChaosEngine;
 use chaos_engine::log;
 use chaos_engine::logger::ChaosLogger;
+use chaos_engine::triggers::trigger_event_key::TriggerEventKey;
 use chaos_engine::ui::layout::UiViewport;
 use chaos_engine::ui::runtime::UiTemplate;
 use chaos_engine::ui::system::UiSystem;
@@ -16,6 +19,28 @@ use chaos_engine::ui::system::UiSystem;
 enum DeviceEvent {
     Resized,
     Input,
+    Data,
+}
+
+/// Sends the current frame time in milliseconds into the `ms_label` UI node every frame via the
+/// `UiSystem`'s data trigger.
+struct FrameTimeCounterSystem;
+
+impl ChaosSystem for FrameTimeCounterSystem {
+    fn initialize(&mut self, _world: &mut ChaosWorld) -> Result<(), &'static str> {
+        Ok(())
+    }
+
+    fn update(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str> {
+        let delta = world.get_time().delta_time();
+        let ms = delta * 1000.0;
+        let msg = ChaosMessageBuilder::new()
+            .with_param("label", "ms_label".to_string())
+            .with_param("text", format!("ms: {ms:.0}"))
+            .build_for_event(TriggerEventKey::new(&DeviceEvent::Data));
+        let _ = world.try_send_message(msg);
+        Ok(())
+    }
 }
 
 fn main() {
@@ -81,6 +106,7 @@ fn main() {
     let mut ui_system =
         UiSystem::with_resize_trigger(template, viewport, Some(DeviceEvent::Resized))
             .with_input_trigger(DeviceEvent::Input)
+            .with_data_trigger(DeviceEvent::Data)
             .with_default_font();
 
     #[cfg(debug_assertions)]
@@ -98,6 +124,7 @@ fn main() {
     });
 
     engine.world_mut().add_render_system(ui_system);
+    engine.world_mut().add_system(FrameTimeCounterSystem);
 
     engine.run();
 }

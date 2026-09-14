@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use chaos_communicator::{
@@ -30,6 +30,7 @@ use crate::{
 pub struct WorldTime {
     current_time: Instant,
     last_time: Instant,
+    last_frame_time: Duration,
 }
 
 impl WorldTime {
@@ -85,6 +86,7 @@ impl ChaosWorld {
             time: WorldTime {
                 current_time: Instant::now(),
                 last_time: Instant::now(),
+                last_frame_time: Duration::new(0, 0),
             },
         }
     }
@@ -185,6 +187,7 @@ impl ChaosWorld {
         self.time = WorldTime {
             current_time: Instant::now(),
             last_time: self.time.current_time,
+            last_frame_time: Instant::duration_since(&Instant::now(), self.time.current_time),
         };
         // slightly hacky way to avoid borrowing self.systems while iterating over it
         let mut systems = std::mem::take(&mut self.systems);

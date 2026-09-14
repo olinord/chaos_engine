@@ -94,13 +94,17 @@ impl ChaosEngine {
         &mut self.world
     }
 
-    fn update(&mut self, event: &WindowEvent) -> Result<(), &'static str> {
-        trace_zone!("engine update");
+    fn forward_device_event(&mut self, event: &WindowEvent) {
+        trace_zone!("engine forward device event");
         for message in self.device_event_system.update(event) {
             if let Err(error) = self.world.try_send_message(message) {
                 log::debug!("Input signal was not delivered: {} {:?}", error, event);
             }
         }
+    }
+
+    fn update(&mut self) -> Result<(), &'static str> {
+        trace_zone!("engine update");
         self.world.update()
     }
 
@@ -141,9 +145,7 @@ impl ApplicationHandler for ChaosEngine {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        self.update(&event).unwrap_or_else(|err| {
-            log::error!("Error updating world: {}", err);
-        });
+        self.forward_device_event(&event);
 
         match event {
             WindowEvent::CloseRequested => {
@@ -156,6 +158,9 @@ impl ApplicationHandler for ChaosEngine {
             }
             WindowEvent::RedrawRequested => {
                 self.window.as_ref().unwrap().request_redraw();
+                self.update().unwrap_or_else(|err| {
+                    log::error!("Error updating world: {}", err);
+                });
                 self.render().unwrap_or_else(|err| {
                     log::error!("Error rendering: {}", err);
                 });

@@ -86,6 +86,11 @@ where
     /// the system; `initialize()` subscribes automatically.
     input_trigger: Option<R>,
     input_receiver: Option<ChaosReceiver>,
+    /// Trigger key whose receiver delivers text updates for labeled nodes.
+    /// Messages must carry `label` and `text` string params; `label` is matched
+    /// against a node's `id` markup attribute via `UiTree::find_by_id_attr`.
+    data_trigger: Option<R>,
+    data_receiver: Option<ChaosReceiver>,
     /// Tracks the last known pointer position so button events can reconstruct it.
     current_pos: PointerPos,
     backend: Option<VulkanUiBackend>,
@@ -150,6 +155,8 @@ where
             resize_receiver: None,
             input_trigger: None,
             input_receiver: None,
+            data_trigger: None,
+            data_receiver: None,
             current_pos: PointerPos { x: 0.0, y: 0.0 },
             backend: None,
             shader_alias: DEFAULT_UI_SHADER_ALIAS.to_string(),
@@ -188,6 +195,14 @@ where
         self
     }
 
+    /// Set the trigger whose receiver delivers text updates for labeled nodes.
+    /// Send a `ChaosMessage` built with `with_param("label", ...)` and
+    /// `with_param("text", ...)` (both `String`) via `world.try_send_message`.
+    pub fn with_data_trigger(mut self, trigger: R) -> Self {
+        self.data_trigger = Some(trigger);
+        self
+    }
+
     /// Override the shader alias key used to look up `ui_rect` shaders. Must
     /// match a directory registered via `ChaosEngine::add_directory(alias,
     /// ...)`. Defaults to [`DEFAULT_UI_SHADER_ALIAS`].
@@ -198,6 +213,10 @@ where
 
     pub fn tree(&self) -> &UiTree {
         &self.tree
+    }
+
+    pub fn tree_mut(&mut self) -> &mut UiTree {
+        &mut self.tree
     }
 
     pub fn paint_list(&self) -> &PaintList {
@@ -417,6 +436,23 @@ where
         }
     }
 
+    fn drain_data_events(&mut self) {
+        let Some(receiver) = self.data_receiver.as_mut() else {
+            return;
+        };
+        while let Some(message) = receiver.receive() {
+            let (Some(label), Some(text)) = (
+                message.get::<String>("label"),
+                message.get::<String>("text"),
+            ) else {
+                continue;
+            };
+            if !self.tree.set_text_by_id(&label, text) {
+                log::warn!("UiSystem: no text node with id '{label}' for data update");
+            }
+        }
+    }
+
     fn drain_resize_events(&mut self) {
         let Some(receiver) = self.resize_receiver.as_mut() else {
             return;
@@ -512,6 +548,9 @@ where
         if let Some(trigger) = self.input_trigger {
             self.input_receiver = Some(world.register_for_trigger(trigger));
         }
+        if let Some(trigger) = self.data_trigger {
+            self.data_receiver = Some(world.register_for_trigger(trigger));
+        }
         Ok(())
     }
 
@@ -519,6 +558,7 @@ where
         self.drain_hot_reload();
         self.drain_resize_events();
         self.drain_input_events();
+        self.drain_data_events();
         self.dispatch_bindings(world);
         self.run_passes().map_err(|e| {
             log::error!("UiSystem update failed: {e}");
