@@ -6,7 +6,7 @@ use vulkano::command_buffer::{
 };
 
 use crate::rendering::buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage};
-use crate::rendering::renderer::ChaosRenderContext;
+use crate::rendering::context::ChaosRenderContext;
 
 /// Where one mesh lives inside the shared vertex + index buffers.
 #[derive(Clone, Copy, Debug)]

@@ -16,8 +16,8 @@ use crate::ChaosReceiver;
 use crate::device::events::ChaosInputEvent;
 use crate::ecs::system::ChaosSystem;
 use crate::ecs::world::ChaosWorld;
+use crate::rendering::context::ChaosRenderContext;
 use crate::rendering::draw_command::ChaosDrawQueue;
-use crate::rendering::renderer::ChaosRenderContext;
 use crate::rendering::rendering_system::ChaosRenderSystem;
 use crate::ui::events::{PointerPos, UiEvent, UiEventRouter, UiInputEvent};
 use crate::ui::layout::{UiLayoutEngine, UiViewport};
@@ -75,7 +75,6 @@ where
     template: UiTemplate,
     tree: UiTree,
     layout_engine: UiLayoutEngine,
-    painter: UiPainter,
     paint_list: PaintList,
     event_queue: Vec<UiEvent>,
     viewport: UiViewport,
@@ -147,7 +146,6 @@ where
             template,
             tree,
             layout_engine: UiLayoutEngine::new(),
-            painter: UiPainter,
             paint_list: PaintList::default(),
             event_queue: Vec::new(),
             viewport: initial_viewport,

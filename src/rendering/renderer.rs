@@ -1,9 +1,5 @@
 use log::debug;
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use vulkano::{
     Validated, VulkanError, VulkanLibrary,
     command_buffer::{
@@ -11,19 +7,13 @@ use vulkano::{
         PrimaryAutoCommandBuffer, RenderingAttachmentInfo, RenderingInfo,
         allocator::StandardCommandBufferAllocator,
     },
-    device::{
-        Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo, physical::PhysicalDevice,
-    },
+    device::{Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo},
     format::ClearValue,
-    image::view::ImageView,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
-    memory::allocator::{FreeListAllocator, GenericMemoryAllocator, StandardMemoryAllocator},
-    pipeline::graphics::viewport::{Scissor, Viewport},
+    memory::allocator::StandardMemoryAllocator,
+    pipeline::graphics::viewport::Scissor,
     render_pass::{AttachmentLoadOp, AttachmentStoreOp},
-    swapchain::{
-        self, PresentFuture, Surface, Swapchain, SwapchainAcquireFuture, SwapchainCreateInfo,
-        SwapchainPresentInfo,
-    },
+    swapchain::{self, PresentFuture, Surface, SwapchainAcquireFuture, SwapchainPresentInfo},
     sync::{
         self, GpuFuture,
         future::{FenceSignalFuture, JoinFuture},
@@ -32,7 +22,7 @@ use vulkano::{
 use winit::{raw_window_handle::DisplayHandle, window::Window};
 
 use crate::rendering::{
-    adapters::select_physical_device, draw_command::ChaosDrawQueue,
+    adapters::select_physical_device, context::ChaosRenderContext, draw_command::ChaosDrawQueue,
     swapchain::get_swapchain_and_backbuffers,
 };
 
@@ -41,85 +31,6 @@ use crate::frame_zone;
 pub type Fence = FenceSignalFuture<
     PresentFuture<CommandBufferExecFuture<JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture>>>,
 >;
-
-#[derive(Debug)]
-struct SwapchainState {
-    swapchain: Arc<Swapchain>,
-    image_views: Vec<Arc<ImageView>>,
-    viewport: Viewport,
-}
-
-#[derive(Debug)]
-pub struct ChaosRenderContext {
-    physical_device: Arc<PhysicalDevice>,
-    device: Arc<Device>,
-    memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
-    swapchain_state: RwLock<SwapchainState>,
-}
-
-impl ChaosRenderContext {
-    pub fn device(&self) -> Arc<Device> {
-        self.device.clone()
-    }
-
-    pub fn physical_device(&self) -> Arc<PhysicalDevice> {
-        self.physical_device.clone()
-    }
-
-    pub fn swapchain(&self) -> Arc<Swapchain> {
-        self.swapchain_state.read().unwrap().swapchain.clone()
-    }
-
-    pub fn memory_allocator(&self) -> Arc<GenericMemoryAllocator<FreeListAllocator>> {
-        self.memory_allocator.clone()
-    }
-
-    pub fn viewport(&self) -> Viewport {
-        self.swapchain_state.read().unwrap().viewport.clone()
-    }
-
-    pub fn image_views(&self) -> Vec<Arc<ImageView>> {
-        self.swapchain_state.read().unwrap().image_views.clone()
-    }
-
-    /// Recreate the swapchain and its image views with the given surface extent.
-    /// The caller must ensure the GPU is not currently using the previous swapchain
-    /// images (wait on all in-flight fences before calling).
-    fn recreate_swapchain(&self, extent: [u32; 2]) -> Result<(), Validated<VulkanError>> {
-        let mut state = self.swapchain_state.write().unwrap();
-        let create_info = SwapchainCreateInfo {
-            image_extent: extent,
-            ..state.swapchain.create_info()
-        };
-        let (new_swapchain, new_images) = state.swapchain.recreate(create_info)?;
-        let new_image_views = new_images
-            .into_iter()
-            .map(|image| {
-                ImageView::new_default(image).expect("failed to create swapchain image view")
-            })
-            .collect();
-        state.swapchain = new_swapchain;
-        state.image_views = new_image_views;
-        state.viewport = flipped_viewport(extent[0] as f32, extent[1] as f32);
-        Ok(())
-    }
-}
-
-/// Vulkan's clip-space Y points downward while OpenGL/GLM-style projection
-/// matrices assume Y-up. Using a negative-height viewport tells the rasterizer
-/// to flip Y for us, so callers can keep writing standard perspective /
-/// orthographic matrices without per-shader compensation.
-///
-/// Side effect: front-face winding is inverted. All current pipelines use
-/// `CullMode::None`; any future pipeline that enables back-face culling must
-/// set `FrontFace::Clockwise`.
-fn flipped_viewport(width: f32, height: f32) -> Viewport {
-    Viewport {
-        offset: [0.0, height],
-        extent: [width, -height],
-        depth_range: 0.0..=1.0,
-    }
-}
 
 #[allow(unused)]
 pub struct ChaosRenderer {
@@ -187,6 +98,12 @@ impl ChaosRenderer {
                     multi_draw_indirect: true,
                     draw_indirect_first_instance: true,
                     shader_draw_parameters: true,
+                    descriptor_indexing: true,
+                    runtime_descriptor_array: true,
+                    shader_sampled_image_array_non_uniform_indexing: true,
+                    descriptor_binding_partially_bound: true,
+                    descriptor_binding_update_unused_while_pending: true,
+                    descriptor_binding_variable_descriptor_count: true,
                     ..DeviceFeatures::empty()
                 },
                 ..Default::default()
@@ -202,7 +119,6 @@ impl ChaosRenderer {
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
         let inner_size = window.inner_size();
-        let viewport = flipped_viewport(inner_size.width as f32, inner_size.height as f32);
         let result = get_swapchain_and_backbuffers(
             physical_device.clone(),
             device.clone(),
@@ -214,12 +130,6 @@ impl ChaosRenderer {
         }
 
         let (swapchain, backbuffers) = result.unwrap();
-        let image_views = backbuffers
-            .into_iter()
-            .map(|image| {
-                ImageView::new_default(image).expect("failed to create swapchain image view")
-            })
-            .collect();
 
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
             device.clone(),
@@ -229,16 +139,15 @@ impl ChaosRenderer {
 
         let fences: Vec<Option<Fence>> = (0..3).map(|_| None).collect();
 
-        let render_context = Arc::new(ChaosRenderContext {
-            physical_device: physical_device.clone(),
-            device: device.clone(),
-            memory_allocator: memory_allocator.clone(),
-            swapchain_state: RwLock::new(SwapchainState {
-                swapchain,
-                image_views,
-                viewport,
-            }),
-        });
+        let render_context = Arc::new(ChaosRenderContext::new(
+            physical_device.clone(),
+            device.clone(),
+            memory_allocator.clone(),
+            swapchain,
+            backbuffers,
+            [inner_size.width as f32, inner_size.height as f32],
+            0.0,
+        ));
 
         ChaosRenderer {
             render_context: render_context.clone(),
@@ -283,6 +192,9 @@ impl ChaosRenderer {
             image_fence.wait(None).unwrap();
         }
 
+        // clear the last frame's descriptor set cache
+        self.render_context.clear_descriptor_set_cache();
+
         self.current_buffer = image_i;
         self.current_acquire_future = Some(acquire_future);
 
@@ -294,9 +206,9 @@ impl ChaosRenderer {
         )
         .unwrap();
 
-        let image_views = self.render_context.image_views();
+        let backbuffers = self.render_context.backbuffers();
         let mut color_attachment =
-            RenderingAttachmentInfo::image_view(image_views[image_i as usize].clone());
+            RenderingAttachmentInfo::image_view(backbuffers[image_i as usize].image_view().clone());
         color_attachment.load_op = AttachmentLoadOp::Clear;
         color_attachment.store_op = AttachmentStoreOp::Store;
         color_attachment.clear_value = Some(ClearValue::Float([0.0, 0.0, 0.0, 1.0]));
@@ -367,7 +279,7 @@ impl ChaosRenderer {
         let previous_future = match self.fences[image_i as usize].take() {
             // Create a NowFuture
             None => {
-                let mut now = sync::now(self.render_context.device.clone());
+                let mut now = sync::now(self.render_context.device());
                 now.cleanup_finished();
 
                 now.boxed()

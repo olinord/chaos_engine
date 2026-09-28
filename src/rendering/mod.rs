@@ -1,10 +1,14 @@
 pub mod adapters;
+pub mod bindless_registry;
 pub mod buffer;
 pub mod command_buffers;
+pub mod context;
 pub mod draw_command;
 pub mod effect;
 pub mod effect_factory;
+pub mod image;
 pub mod multi_draw_indirect_buffer;
 pub mod renderer;
 pub mod rendering_system;
+pub mod sampler;
 pub mod swapchain;

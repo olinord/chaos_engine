@@ -3,12 +3,14 @@ use std::sync::Arc;
 use vulkano::{
     Validated, VulkanError,
     device::{Device, physical::PhysicalDevice},
-    image::{Image, ImageUsage},
+    image::ImageUsage,
     render_pass::RenderPass,
     swapchain::{Surface, Swapchain, SwapchainCreateInfo},
 };
 
-pub type SwapchainAndImages = (Arc<Swapchain>, Vec<Arc<Image>>);
+use crate::rendering::image::ChaosImage;
+
+pub type SwapchainAndImages = (Arc<Swapchain>, Vec<Arc<ChaosImage>>);
 
 pub fn get_swapchain_and_backbuffers(
     physical_device: Arc<PhysicalDevice>,
@@ -26,7 +28,7 @@ pub fn get_swapchain_and_backbuffers(
         .unwrap()[0]
         .0;
 
-    Swapchain::new(
+    let (swapchain, raw_backbuffers) = Swapchain::new(
         device.clone(),
         surface,
         SwapchainCreateInfo {
@@ -37,7 +39,17 @@ pub fn get_swapchain_and_backbuffers(
             composite_alpha,
             ..Default::default()
         },
-    )
+    )?;
+
+    let mut backbuffers: Vec<Arc<ChaosImage>> = Vec::new();
+    for raw_backbuffer in raw_backbuffers {
+        backbuffers.push(Arc::new(ChaosImage::from_existing(
+            format!("Backbuffer {}", backbuffers.len()),
+            raw_backbuffer,
+            vulkano::image::ImageLayout::PresentSrc,
+        )));
+    }
+    Ok((swapchain, backbuffers))
 }
 
 pub fn get_render_pass(device: Arc<Device>, swapchain: &Arc<Swapchain>) -> Arc<RenderPass> {

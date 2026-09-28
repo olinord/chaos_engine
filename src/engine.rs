@@ -4,8 +4,7 @@ use crate::{
     device::system::DeviceEventSystem,
     ecs::world::ChaosWorld,
     rendering::{
-        effect_factory::EffectFactory,
-        renderer::{ChaosRenderContext, ChaosRenderer},
+        context::ChaosRenderContext, effect_factory::EffectFactory, renderer::ChaosRenderer,
     },
     trace_zone,
 };

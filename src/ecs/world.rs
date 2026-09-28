@@ -21,7 +21,7 @@ use crate::{
         system::ChaosSystem,
     },
     rendering::{
-        draw_command::ChaosDrawQueue, renderer::ChaosRenderContext,
+        context::ChaosRenderContext, draw_command::ChaosDrawQueue,
         rendering_system::ChaosRenderSystem,
     },
     triggers::trigger_event_key::TriggerEventKey,
@@ -39,6 +39,10 @@ impl WorldTime {
             .current_time
             .duration_since(self.last_time)
             .as_secs_f32();
+    }
+
+    pub fn last_frame_time(&self) -> Duration {
+        self.last_frame_time
     }
 }
 

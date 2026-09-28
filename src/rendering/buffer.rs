@@ -6,7 +6,7 @@ use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Sub
 use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter};
 
-use crate::rendering::renderer::ChaosRenderContext;
+use crate::rendering::context::ChaosRenderContext;
 
 #[derive(Debug, Clone)]
 pub enum ChaosBufferUsage {
@@ -161,7 +161,8 @@ impl From<ChaosBufferUsage> for BufferUsage {
             }
             ChaosBufferUsage::ShaderBindingTable => BufferUsage::SHADER_BINDING_TABLE,
             ChaosBufferUsage::Invalid => {
-                panic!("Trying to convert Invalid ChaosBufferUsage to Vulkano BufferUsage")
+                log::error!("Trying to convert Invalid ChaosBufferUsage to Vulkano BufferUsage");
+                BufferUsage::empty()
             }
         }
     }

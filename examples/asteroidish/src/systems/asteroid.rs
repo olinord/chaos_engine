@@ -4,11 +4,11 @@ use chaos_engine::{
     log,
     math::{Vec2, Vec3, matrix::Mat4},
     rendering::{
+        context::ChaosRenderContext,
         draw_command::{ChaosDrawCommand, ChaosDrawQueue, ChaosRenderPhase},
         effect::ChaosEffect,
         effect_factory::{EffectFactory, EffectUsage},
         multi_draw_indirect_buffer::ChaosMultiDrawIndirectBuffer,
-        renderer::ChaosRenderContext,
         rendering_system::ChaosRenderSystem,
     },
 };

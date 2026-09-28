@@ -12,10 +12,10 @@ use crate::{
     math::{Vec2, matrix::Mat4},
     rendering::{
         buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage},
+        context::ChaosRenderContext,
         draw_command::{ChaosDrawCommand, ChaosDrawQueue, ChaosRenderPhase},
         effect::ChaosEffect,
         effect_factory::{EffectFactory, EffectUsage},
-        renderer::ChaosRenderContext,
     },
     ui::{
         FontId, NodeId, TextureId,
