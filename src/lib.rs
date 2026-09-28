@@ -12,6 +12,7 @@ pub mod rendering;
 pub mod telemetry;
 pub mod triggers;
 pub mod ui;
+pub mod utils;
 pub use vulkano_macros::{BufferContents, Vertex};
 
 pub use chaos_communicator::{

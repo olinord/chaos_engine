@@ -1,19 +1,31 @@
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
-use vulkano::ValidationError;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
-use vulkano::descriptor_set::allocator::{
-    StandardDescriptorSetAllocator, StandardDescriptorSetAllocatorCreateInfo,
-};
-use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
+use vulkano::descriptor_set::WriteDescriptorSet;
 use vulkano::pipeline::{Pipeline, PipelineBindPoint};
+use vulkano::{Validated, ValidationError, VulkanError};
 use vulkano::{buffer::BufferContents, pipeline::GraphicsPipeline};
 
 use crate::rendering::buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage};
-use crate::rendering::renderer::ChaosRenderContext;
+use crate::rendering::context::ChaosRenderContext;
 
-type DescriptorBinding = (u32, u32);
+#[derive(Hash, Eq, PartialEq, Debug, Clone, PartialOrd)]
+struct DescriptorBinding {
+    set_index: u32,
+    binding_index: u32,
+}
+
+impl Ord for DescriptorBinding {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.set_index.cmp(&other.set_index) {
+            Ordering::Equal => self.binding_index.cmp(&other.binding_index),
+            other => other,
+        }
+    }
+}
 
 pub struct ChaosEffect {
     pub name: String,
@@ -23,7 +35,6 @@ pub struct ChaosEffect {
     pipeline_bind_point: PipelineBindPoint,
     uniform_buffers: HashMap<DescriptorBinding, ChaosBuffer>,
     storage_buffers: HashMap<DescriptorBinding, ChaosBuffer>,
-    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
 }
 
 impl ChaosEffect {
@@ -40,10 +51,6 @@ impl ChaosEffect {
             pipeline_bind_point: PipelineBindPoint::Graphics,
             uniform_buffers: HashMap::new(),
             storage_buffers: HashMap::new(),
-            descriptor_set_allocator: Arc::new(StandardDescriptorSetAllocator::new(
-                render_context.device(),
-                StandardDescriptorSetAllocatorCreateInfo::default(),
-            )),
         }
     }
 
@@ -57,7 +64,11 @@ impl ChaosEffect {
         binding_index: u32,
         data: T,
     ) -> Result<(), String> {
-        let buffer = match self.uniform_buffers.get_mut(&(set_index, binding_index)) {
+        let binding = DescriptorBinding {
+            set_index,
+            binding_index,
+        };
+        let buffer = match self.uniform_buffers.get_mut(&binding) {
             Some(buffer) => buffer,
             None => {
                 let new_buffer = ChaosBuffer::new(
@@ -70,13 +81,10 @@ impl ChaosEffect {
                     self.render_context.clone(),
                 );
 
-                self.uniform_buffers
-                    .insert((set_index, binding_index), new_buffer);
+                self.uniform_buffers.insert(binding.clone(), new_buffer);
 
                 self.hash = self.sort_key();
-                self.uniform_buffers
-                    .get_mut(&(set_index, binding_index))
-                    .unwrap()
+                self.uniform_buffers.get_mut(&binding).unwrap()
             }
         };
         buffer.set_data(data)?;
@@ -89,7 +97,11 @@ impl ChaosEffect {
         binding_index: u32,
         data: Vec<T>,
     ) -> Result<(), String> {
-        let buffer = match self.uniform_buffers.get_mut(&(set_index, binding_index)) {
+        let binding = DescriptorBinding {
+            set_index,
+            binding_index,
+        };
+        let buffer = match self.uniform_buffers.get_mut(&binding) {
             Some(buffer) => buffer,
             None => {
                 let new_buffer = ChaosBuffer::new(
@@ -102,13 +114,10 @@ impl ChaosEffect {
                     self.render_context.clone(),
                 );
 
-                self.uniform_buffers
-                    .insert((set_index, binding_index), new_buffer);
+                self.uniform_buffers.insert(binding.clone(), new_buffer);
 
                 self.hash = self.sort_key();
-                self.uniform_buffers
-                    .get_mut(&(set_index, binding_index))
-                    .unwrap()
+                self.uniform_buffers.get_mut(&binding).unwrap()
             }
         };
         buffer.set_data_from_vec(data)?;
@@ -121,7 +130,11 @@ impl ChaosEffect {
         binding_index: u32,
         data: T,
     ) -> Result<(), String> {
-        let buffer = match self.storage_buffers.get_mut(&(set_index, binding_index)) {
+        let binding = DescriptorBinding {
+            set_index,
+            binding_index,
+        };
+        let buffer = match self.storage_buffers.get_mut(&binding) {
             Some(buffer) => buffer,
             None => {
                 let new_buffer = ChaosBuffer::new(
@@ -134,13 +147,10 @@ impl ChaosEffect {
                     self.render_context.clone(),
                 );
 
-                self.storage_buffers
-                    .insert((set_index, binding_index), new_buffer);
+                self.storage_buffers.insert(binding.clone(), new_buffer);
 
                 self.hash = self.sort_key();
-                self.storage_buffers
-                    .get_mut(&(set_index, binding_index))
-                    .unwrap()
+                self.storage_buffers.get_mut(&binding).unwrap()
             }
         };
         buffer.set_data(data)?;
@@ -153,7 +163,10 @@ impl ChaosEffect {
         binding_index: u32,
         data: Vec<T>,
     ) -> Result<(), String> {
-        let buffer = match self.storage_buffers.get_mut(&(set_index, binding_index)) {
+        let buffer = match self.storage_buffers.get_mut(&DescriptorBinding {
+            set_index,
+            binding_index,
+        }) {
             Some(buffer) => buffer,
             None => {
                 let new_buffer = ChaosBuffer::new(
@@ -166,12 +179,20 @@ impl ChaosEffect {
                     self.render_context.clone(),
                 );
 
-                self.storage_buffers
-                    .insert((set_index, binding_index), new_buffer);
+                self.storage_buffers.insert(
+                    DescriptorBinding {
+                        set_index,
+                        binding_index,
+                    },
+                    new_buffer,
+                );
 
                 self.hash = self.sort_key();
                 self.storage_buffers
-                    .get_mut(&(set_index, binding_index))
+                    .get_mut(&DescriptorBinding {
+                        set_index,
+                        binding_index,
+                    })
                     .unwrap()
             }
         };
@@ -189,81 +210,33 @@ impl ChaosEffect {
         Ok(())
     }
 
-    pub fn bind_descriptor_sets(
-        &self,
-        command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-    ) -> Result<(), Box<ValidationError>> {
-        let pipeline_layout = self.pipeline.layout().clone();
-
-        for (set_index, set_layout) in pipeline_layout.set_layouts().iter().enumerate() {
-            let descriptor_writes = self.descriptor_writes_for_set(set_index as u32);
-            if descriptor_writes.is_empty() {
-                continue;
-            }
-
-            let descriptor_set = DescriptorSet::new(
-                self.descriptor_set_allocator.clone(),
-                set_layout.clone(),
-                descriptor_writes,
-                std::iter::empty(),
-            )
-            .map_err(|error| {
-                Box::new(ValidationError {
-                    context: "ChaosEffect::bind_descriptor_sets".into(),
-                    problem: format!(
-                        "failed to allocate descriptor set {} for effect {}: {:?}",
-                        set_index, self.name, error
-                    )
-                    .into(),
-                    ..Default::default()
-                })
-            })?;
-
-            command_buffer.bind_descriptor_sets(
-                self.pipeline_bind_point,
-                pipeline_layout.clone(),
-                set_index as u32,
-                descriptor_set,
-            )?;
-        }
-
-        Ok(())
-    }
-
-    fn descriptor_writes_for_set(&self, set_index: u32) -> Vec<WriteDescriptorSet> {
+    fn get_descriptor_writes(&self, set_index: u32) -> Vec<WriteDescriptorSet> {
         let mut descriptor_writes = Vec::new();
-        self.add_descriptor_writes_for_set(
-            set_index,
-            &self.uniform_buffers,
-            &mut descriptor_writes,
-        );
-        self.add_descriptor_writes_for_set(
-            set_index,
-            &self.storage_buffers,
-            &mut descriptor_writes,
-        );
-        descriptor_writes.sort_by_key(|write| write.binding());
+
+        let add =
+            |binding_index: u32, buffer: &ChaosBuffer, writes: &mut Vec<WriteDescriptorSet>| {
+                if let Some(buffer) = buffer.buffer() {
+                    writes.push(WriteDescriptorSet::buffer(
+                        binding_index,
+                        buffer.as_ref().clone(),
+                    ));
+                }
+            };
+
+        let add_buffers = |set_index: u32,
+                           buffers: &HashMap<DescriptorBinding, ChaosBuffer>,
+                           writes: &mut Vec<WriteDescriptorSet>| {
+            for (binding, buffer) in buffers {
+                if binding.set_index == set_index {
+                    add(binding.binding_index, buffer, writes);
+                }
+            }
+        };
+
+        add_buffers(set_index, &self.uniform_buffers, &mut descriptor_writes);
+        add_buffers(set_index, &self.storage_buffers, &mut descriptor_writes);
+
         descriptor_writes
-    }
-
-    fn add_descriptor_writes_for_set(
-        &self,
-        set_index: u32,
-        buffers: &HashMap<DescriptorBinding, ChaosBuffer>,
-        descriptor_writes: &mut Vec<WriteDescriptorSet>,
-    ) {
-        for ((buffer_set_index, binding_index), buffer) in buffers {
-            if *buffer_set_index != set_index {
-                continue;
-            }
-
-            if let Some(buffer) = buffer.buffer() {
-                descriptor_writes.push(WriteDescriptorSet::buffer(
-                    *binding_index,
-                    buffer.as_ref().clone(),
-                ));
-            }
-        }
     }
 
     pub fn pipeline(&self) -> Arc<GraphicsPipeline> {
@@ -291,6 +264,60 @@ impl ChaosEffect {
         hash_buffer_bindings(&mut hasher, UNIFORM_TAG, &self.uniform_buffers);
         hash_buffer_bindings(&mut hasher, STORAGE_TAG, &self.storage_buffers);
 
+        hasher.finish()
+    }
+
+    // goes through the descriptor writes for the pipeline layout
+    // gets or creates the desciptor set from the render context and binds it to the command buffer.
+    pub fn bind_descriptor_sets(
+        &self,
+        cb: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    ) -> Result<(), Validated<VulkanError>> {
+        let layout = self.pipeline.layout().clone();
+
+        for (set_index, set_layout) in layout.set_layouts().iter().enumerate() {
+            let set_index = set_index as u32;
+            let buffers_for_set = self
+                .storage_buffers
+                .iter()
+                .chain(self.uniform_buffers.iter())
+                .filter(|(binding, buffer)| {
+                    (binding.set_index == set_index) && buffer.buffer().is_some()
+                })
+                .map(|(binding, buffer)| {
+                    WriteDescriptorSet::buffer(
+                        binding.binding_index,
+                        buffer.buffer().unwrap().as_ref().clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            if buffers_for_set.is_empty() {
+                continue;
+            }
+            let writes = self.get_descriptor_writes(set_index);
+
+            let key = self.descriptor_set_key(set_index);
+            let set = self
+                .render_context
+                .get_or_create_descriptor_set(key, set_layout, || writes)
+                .map_err(|e| {
+                    Box::new(ValidationError {
+                        context: "ChaosEffect::bind_descriptor_sets".into(),
+                        problem: format!("set {set_index} for {}: {e:?}", self.name).into(),
+                        ..Default::default()
+                    })
+                })?;
+            cb.bind_descriptor_sets(self.pipeline_bind_point, layout.clone(), set_index, set)?;
+        }
+
+        Ok(())
+    }
+
+    fn descriptor_set_key(&self, set_index: u32) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        set_index.hash(&mut hasher);
+        Arc::as_ptr(&self.pipeline).hash(&mut hasher);
         hasher.finish()
     }
 }

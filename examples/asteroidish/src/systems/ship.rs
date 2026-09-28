@@ -10,10 +10,10 @@ use chaos_engine::{
     },
     rendering::{
         buffer::ChaosBuffer,
+        context::ChaosRenderContext,
         draw_command::{ChaosDrawCommand, ChaosDrawQueue, ChaosRenderPhase},
         effect::ChaosEffect,
         effect_factory::{EffectFactory, EffectUsage},
-        renderer::ChaosRenderContext,
         rendering_system::ChaosRenderSystem,
     },
 };

@@ -22,8 +22,8 @@ use vulkano::pipeline::{
 use vulkano::shader::spirv::bytes_to_words;
 use vulkano::shader::{self, EntryPoint, ShaderModule, ShaderModuleCreateInfo};
 
+use crate::rendering::context::ChaosRenderContext;
 use crate::rendering::effect::ChaosEffect;
-use crate::rendering::renderer::ChaosRenderContext;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ShaderType {
@@ -530,39 +530,39 @@ impl EffectFactory {
 impl Display for ChaosEffectBuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ChaosEffectBuildError::MissingDevice => write!(f, "No device provided"),
+            ChaosEffectBuildError::MissingDevice => {
+                return write!(f, "No device provided");
+            }
             ChaosEffectBuildError::MissingShader { error } => {
-                write!(f, "Missing shader: {}", error)
+                return write!(f, "Missing shader: {}", error);
             }
             ChaosEffectBuildError::UndefinedShaderType => {
-                write!(f, "Undefined shader type (not vertex or pixel)")
+                return write!(f, "Undefined shader type (not vertex or pixel)");
             }
             ChaosEffectBuildError::InvalidShader { shader_path, error } => {
-                write!(f, "Invalid shader at path {}: {}", shader_path, error)
+                return write!(f, "Invalid shader at path {}: {}", shader_path, error);
             }
             ChaosEffectBuildError::ShaderNotFound { shader_path, error } => {
-                write!(f, "Shader {} not found : {}", shader_path, error)
+                return write!(f, "Shader {} not found : {}", shader_path, error);
             }
             ChaosEffectBuildError::DirectoryNotFound {
                 directory_path,
                 error,
             } => {
-                write!(
+                return write!(
                     f,
                     "Directory not found at path {}: {}",
                     directory_path, error
-                )
+                );
             }
             ChaosEffectBuildError::MissingEntryPoint { shader_path } => {
-                write!(f, "Missing entry point in shader at path {}", shader_path)
+                return write!(f, "Missing entry point in shader at path {}", shader_path);
             }
             ChaosEffectBuildError::VulkanError { vulkan_error } => {
                 // write the vulkan error into a string and format it sensibly
-                write!(f, "Vulkan error: ")?;
-                vulkan_error.split('\n').for_each(|line| {
-                    write!(f, "\t{}", line).unwrap();
-                });
-                Ok(())
+                let error_lines = vulkan_error.split('\n').collect::<Vec<_>>();
+                let error_string = error_lines.join("\t");
+                return write!(f, "Vulkan error: \n{}", error_string);
             }
         }
     }

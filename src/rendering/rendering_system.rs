@@ -1,7 +1,7 @@
 use crate::ecs::system::ChaosSystem;
 use crate::ecs::world::ChaosWorld;
+use crate::rendering::context::ChaosRenderContext;
 use crate::rendering::draw_command::ChaosDrawQueue;
-use crate::rendering::renderer::ChaosRenderContext;
 use std::sync::Arc;
 
 pub trait ChaosRenderSystem: ChaosSystem {
