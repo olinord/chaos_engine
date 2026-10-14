@@ -17,8 +17,8 @@ use vulkano::{
 };
 
 use crate::rendering::{
-    image::ChaosImage,
     sampler::{ChaosSampler, SamplerDescriptor},
+    texture::ChaosTexture,
 };
 
 /// Vulkan's clip-space Y points downward while OpenGL/GLM-style projection
@@ -40,7 +40,7 @@ fn flipped_viewport(width: f32, height: f32) -> Viewport {
 #[derive(Debug)]
 pub struct SwapchainState {
     swapchain: Arc<Swapchain>,
-    backbuffers: Vec<Arc<ChaosImage>>,
+    backbuffers: Vec<Arc<ChaosTexture>>,
     viewport: Viewport,
 }
 
@@ -50,6 +50,7 @@ pub struct ChaosRenderContext {
     device: Arc<Device>,
     memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
     swapchain_state: RwLock<SwapchainState>,
+    graphic_family_index: u32,
     mip_lod_bias: f32,
     frame_index: usize,
     descriptor_set_cache: Mutex<HashMap<u64, Arc<DescriptorSet>>>,
@@ -62,7 +63,8 @@ impl ChaosRenderContext {
         device: Arc<Device>,
         memory_allocator: Arc<GenericMemoryAllocator<FreeListAllocator>>,
         swapchain: Arc<Swapchain>,
-        backbuffers: Vec<Arc<ChaosImage>>,
+        backbuffers: Vec<Arc<ChaosTexture>>,
+        graphic_family_index: u32,
         viewport_size: [f32; 2],
         mip_lod_bias: f32,
     ) -> ChaosRenderContext {
@@ -76,6 +78,7 @@ impl ChaosRenderContext {
                 backbuffers,
                 viewport: flipped_viewport(viewport_size[0], viewport_size[1]),
             }),
+            graphic_family_index,
             mip_lod_bias,
             frame_index: 0,
             descriptor_set_cache: Mutex::new(HashMap::new()),
@@ -106,7 +109,11 @@ impl ChaosRenderContext {
         self.swapchain_state.read().unwrap().viewport.clone()
     }
 
-    pub fn backbuffers(&self) -> Vec<Arc<ChaosImage>> {
+    pub fn graphic_family_index(&self) -> u32 {
+        self.graphic_family_index
+    }
+
+    pub fn backbuffers(&self) -> Vec<Arc<ChaosTexture>> {
         self.swapchain_state.read().unwrap().backbuffers.clone()
     }
 
@@ -140,7 +147,7 @@ impl ChaosRenderContext {
             .into_iter()
             .enumerate()
             .map(|(i, image)| {
-                Arc::new(ChaosImage::from_existing(
+                Arc::new(ChaosTexture::from_existing(
                     format!("Backbuffer {}", i),
                     image,
                     vulkano::image::ImageLayout::PresentSrc,

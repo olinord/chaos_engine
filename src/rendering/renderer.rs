@@ -7,7 +7,7 @@ use vulkano::{
         PrimaryAutoCommandBuffer, RenderingAttachmentInfo, RenderingInfo,
         allocator::StandardCommandBufferAllocator,
     },
-    device::{Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo},
+    device::{Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags},
     format::ClearValue,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::StandardMemoryAllocator,
@@ -83,6 +83,14 @@ impl ChaosRenderer {
         let (physical_device, queue_family_index) =
             select_physical_device(&instance, &surface, &device_extensions);
 
+        let graphic_family_index: u32 = physical_device
+            .queue_family_properties()
+            .iter()
+            .enumerate()
+            .find(|(_, qf)| qf.queue_flags.contains(QueueFlags::GRAPHICS))
+            .map(|(index, _)| index as u32)
+            .unwrap();
+
         let (device, mut queues) = match Device::new(
             physical_device.clone(),
             DeviceCreateInfo {
@@ -145,6 +153,7 @@ impl ChaosRenderer {
             memory_allocator.clone(),
             swapchain,
             backbuffers,
+            graphic_family_index,
             [inner_size.width as f32, inner_size.height as f32],
             0.0,
         ));

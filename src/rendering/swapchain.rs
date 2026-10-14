@@ -8,9 +8,9 @@ use vulkano::{
     swapchain::{Surface, Swapchain, SwapchainCreateInfo},
 };
 
-use crate::rendering::image::ChaosImage;
+use crate::rendering::texture::ChaosTexture;
 
-pub type SwapchainAndImages = (Arc<Swapchain>, Vec<Arc<ChaosImage>>);
+pub type SwapchainAndImages = (Arc<Swapchain>, Vec<Arc<ChaosTexture>>);
 
 pub fn get_swapchain_and_backbuffers(
     physical_device: Arc<PhysicalDevice>,
@@ -41,9 +41,9 @@ pub fn get_swapchain_and_backbuffers(
         },
     )?;
 
-    let mut backbuffers: Vec<Arc<ChaosImage>> = Vec::new();
+    let mut backbuffers: Vec<Arc<ChaosTexture>> = Vec::new();
     for raw_backbuffer in raw_backbuffers {
-        backbuffers.push(Arc::new(ChaosImage::from_existing(
+        backbuffers.push(Arc::new(ChaosTexture::from_existing(
             format!("Backbuffer {}", backbuffers.len()),
             raw_backbuffer,
             vulkano::image::ImageLayout::PresentSrc,

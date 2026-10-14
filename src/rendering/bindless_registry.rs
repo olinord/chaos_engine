@@ -7,7 +7,7 @@ use vulkano::descriptor_set::{
     layout::{DescriptorSetLayout, DescriptorSetLayoutCreateInfo},
 };
 
-use crate::rendering::{context::ChaosRenderContext, image::ChaosImage, sampler::ChaosSampler};
+use crate::rendering::{context::ChaosRenderContext, texture::ChaosTexture, sampler::ChaosSampler};
 
 pub struct BindlessRegistry {
     descriptor_set: Arc<DescriptorSet>, // the single persistent update-after-bind set
@@ -26,7 +26,7 @@ pub struct BindlessRegistry {
 #[derive(Clone, Debug)]
 struct BindlessSlot {
     #[allow(dead_code)]
-    image: Arc<ChaosImage>,
+    image: Arc<ChaosTexture>,
     #[allow(dead_code)]
     sampler: Arc<ChaosSampler>,
 }
@@ -82,7 +82,7 @@ impl BindlessRegistry {
 
     pub fn register_image(
         &mut self,
-        image: Arc<ChaosImage>,
+        image: Arc<ChaosTexture>,
         sampler: Arc<ChaosSampler>,
     ) -> BindlessSlotHandle {
         let slot_index = match self.free_list.pop() {
