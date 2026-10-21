@@ -238,11 +238,11 @@ mod tests {
     fn atlas_grows_when_full() {
         // Atlas is only 16 tall; packing a glyph taller than that forces a grow.
         let mut atlas = GlyphAtlas::new(64, 16);
-        let bitmap = vec![1u8; 8 * 8];
+        let bitmap = vec![1u8; 64 * 8];
         atlas.pack(fake_metrics(8, 8, 10.0), &bitmap);
         // This second glyph would overflow the original 16-row atlas if it
         // goes to a second row; since cursor_y(=9) + 8 > 16, grow fires.
-        let bitmap2 = vec![2u8; 8 * 8];
+        let bitmap2 = vec![2u8; 64 * 8];
         atlas.pack(fake_metrics(64, 8, 10.0), &bitmap2); // forces wrap then grow
         assert_eq!(atlas.height, 32, "atlas should have doubled");
         assert!(atlas.dirty);

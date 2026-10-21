@@ -150,7 +150,6 @@ impl ChaosRenderContext {
                 Arc::new(ChaosTexture::from_existing(
                     format!("Backbuffer {}", i),
                     image,
-                    vulkano::image::ImageLayout::PresentSrc,
                 ))
             })
             .collect();

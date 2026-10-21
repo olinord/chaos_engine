@@ -2,7 +2,7 @@ use std::sync::Arc;
 use vulkano::format::Format;
 use vulkano::image::SampleCount;
 use vulkano::image::view::ImageView;
-use vulkano::image::{Image, ImageCreateInfo, ImageLayout, ImageUsage};
+use vulkano::image::{Image, ImageCreateInfo, ImageUsage};
 
 use crate::rendering::context::ChaosRenderContext;
 
@@ -14,7 +14,6 @@ pub struct ChaosTextureDescription {
     pub array_size: u32,
     pub format: Format,
     pub image_usage: ImageUsage,
-    pub image_layout: ImageLayout,
 }
 
 #[derive(Debug, Clone)]
@@ -25,7 +24,7 @@ pub struct ChaosTexture {
 }
 
 impl ChaosTexture {
-    pub fn from_existing(name: String, image: Arc<Image>, image_layout: ImageLayout) -> Self {
+    pub fn from_existing(name: String, image: Arc<Image>) -> Self {
         Self {
             inner_image: image.clone(),
             inner_image_view: ImageView::new_default(image.clone()).unwrap(),
@@ -36,7 +35,6 @@ impl ChaosTexture {
                 array_size: image.array_layers(),
                 format: image.format(),
                 image_usage: image.usage(),
-                image_layout,
             },
         }
     }
@@ -46,7 +44,6 @@ impl ChaosTexture {
         format: Format,
         width: u32,
         height: u32,
-        image_layout: ImageLayout,
         render_context: Arc<ChaosRenderContext>,
     ) -> Self {
         Self::new(
@@ -56,7 +53,6 @@ impl ChaosTexture {
             1,
             format,
             ImageUsage::DEPTH_STENCIL_ATTACHMENT,
-            image_layout,
             render_context,
         )
     }
@@ -66,7 +62,6 @@ impl ChaosTexture {
         format: Format,
         width: u32,
         height: u32,
-        image_layout: ImageLayout,
         render_context: Arc<ChaosRenderContext>,
     ) -> Self {
         Self::new(
@@ -76,7 +71,6 @@ impl ChaosTexture {
             1,
             format,
             ImageUsage::SAMPLED,
-            image_layout,
             render_context,
         )
     }
@@ -88,7 +82,6 @@ impl ChaosTexture {
         array_size: u32,
         format: Format,
         image_usage: ImageUsage,
-        image_layout: ImageLayout,
         render_context: Arc<ChaosRenderContext>,
     ) -> Self {
         let create_info = ImageCreateInfo {
@@ -120,7 +113,6 @@ impl ChaosTexture {
                 array_size: array_size,
                 format: format,
                 image_usage: image_usage,
-                image_layout: image_layout,
             },
         }
     }
@@ -131,14 +123,6 @@ impl ChaosTexture {
 
     pub fn image(&self) -> Arc<Image> {
         self.inner_image.clone()
-    }
-
-    pub fn get_image_layout(&self) -> ImageLayout {
-        self.description.image_layout
-    }
-
-    pub fn set_image_layout(&mut self, image_layout: ImageLayout) {
-        self.description.image_layout = image_layout;
     }
 
     pub fn description(&self) -> &ChaosTextureDescription {

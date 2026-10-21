@@ -27,9 +27,40 @@ pub enum NodeInputKind {
     TestKind,
 }
 
+/// The queue a node is intended to run on. Used to tell lanes apart in the graph dump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueueKind {
+    #[default]
+    Graphics,
+    Compute,
+    Transfer,
+}
+
+impl QueueKind {
+    pub const ALL: [QueueKind; 3] = [QueueKind::Graphics, QueueKind::Compute, QueueKind::Transfer];
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            QueueKind::Graphics => "graphics",
+            QueueKind::Compute => "compute",
+            QueueKind::Transfer => "transfer",
+        }
+    }
+
+    /// Mermaid `classDef` style for nodes of this queue kind.
+    pub fn mermaid_style(&self) -> &'static str {
+        match self {
+            QueueKind::Graphics => "fill:#cfe8ff,stroke:#2b6cb0",
+            QueueKind::Compute => "fill:#ffe3b3,stroke:#b7791f",
+            QueueKind::Transfer => "fill:#d7f5d3,stroke:#2f855a",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct GraphNode {
     pub name: String,
+    pub queue: QueueKind,
     pub node_type: Arc<dyn NodeType>,
     pub input_descriptions: HashMap<String, NodeInputKind>,
     pub resource_descriptions: HashMap<String, ResourceDescription>,
@@ -46,11 +77,17 @@ impl GraphNode {
     pub fn new(name: String, node_type: impl NodeType + 'static) -> Self {
         GraphNode {
             name,
+            queue: QueueKind::default(),
             node_type: Arc::new(node_type),
             input_descriptions: HashMap::new(),
             resource_descriptions: HashMap::new(),
             outputs: HashSet::new(),
         }
+    }
+
+    pub fn with_queue(mut self, queue: QueueKind) -> Self {
+        self.queue = queue;
+        self
     }
 
     pub fn with_input(mut self, name: String, kind: NodeInputKind) -> Self {

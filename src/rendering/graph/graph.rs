@@ -1,31 +1,27 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use vulkano::{
     Validated, ValidationError, VulkanError,
     command_buffer::{
         CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, RecordingCommandBuffer,
-        RenderPassBeginInfo, RenderingInfo, SubpassEndInfo,
+        RenderingInfo,
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
     },
     image::ImageLayout,
-    render_pass::RenderPass,
     sync::{DependencyInfo, ImageMemoryBarrier},
 };
 
 use crate::rendering::{
     context::ChaosRenderContext,
     graph::{
-        node::{self, Connector, GraphNode, GraphNodeId, NodeInputKind},
-        resource::{Resource, ResourceDescription, ResourceHandle},
+        node::{Connector, GraphNode, GraphNodeId, NodeInputKind, QueueKind},
+        resource::{Resource, ResourceHandle},
     },
     texture::ChaosTexture,
 };
 
 pub type ResourceId = usize;
-pub const DESTINATION_RESOURCE_ID: ResourceId = 0;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum GraphError {
@@ -45,17 +41,29 @@ pub enum GraphError {
         resource_name: String,
     },
     ResourceNotFound {
-        resource_id: ResourceId,
+        node_id: GraphNodeId,
+        resource_name: String,
     },
     ConnectionBetweenSameNode {
         node_id: GraphNodeId,
     },
-    CircularConnection,
+    CircularConnection(Vec<String>),
     BarrierError(String),
     CommandBufferCreationFailed(String),
     NodeExecutionFailed(String),
     VulkanError(String),
     Custom(String),
+    ConnectionAlreadyExists {
+        destination_id: usize,
+        destination_input: String,
+    },
+    InputNotConnected {
+        node_name: String,
+        input_name: String,
+    },
+    NodeResourceNotFound {
+        resource_name: String,
+    },
 }
 
 impl From<Validated<VulkanError>> for GraphError {
@@ -75,18 +83,54 @@ pub enum Job {
         resource_id: ResourceId,
         image_layout: ImageLayout,
     },
+    // inputs are keyed by the node's own input name, outputs by the node's resource name.
+    // Only ids are stored since the handles are replaced whenever the resources are recreated.
     NodeExecutionJob {
         graph_node_id: GraphNodeId,
+        inputs: Vec<(String, ResourceId)>,
+        outputs: Vec<(String, ResourceId)>,
     },
+}
+
+/// The resources a node can reach by name, resolved by the graph right before the node executes.
+#[derive(Debug)]
+pub struct NodeResources {
+    entries: Vec<(String, Arc<ResourceHandle>)>,
+}
+
+impl NodeResources {
+    pub fn new(entries: Vec<(String, Arc<ResourceHandle>)>) -> Self {
+        Self { entries }
+    }
+
+    pub fn get(&self, name: &str) -> Result<&Arc<ResourceHandle>, GraphError> {
+        self.entries
+            .iter()
+            .find(|(entry_name, _)| entry_name == name)
+            .map(|(_, handle)| handle)
+            .ok_or_else(|| GraphError::NodeResourceNotFound {
+                resource_name: name.to_string(),
+            })
+    }
 }
 
 #[derive(Debug)]
 pub struct GraphContext<'a> {
     pub render_size: [u32; 2],
     pub display_size: [u32; 2],
-    pub resources: HashMap<ResourceId, Arc<ResourceHandle>>,
-    pub resource_lookup: HashMap<String, ResourceId>,
+    pub inputs: NodeResources,
+    pub node_resources: NodeResources,
     pub command_buffer: &'a mut RecordingCommandBuffer,
+}
+
+impl GraphContext<'_> {
+    pub fn input(&self, name: &str) -> Result<&Arc<ResourceHandle>, GraphError> {
+        self.inputs.get(name)
+    }
+
+    pub fn resource(&self, name: &str) -> Result<&Arc<ResourceHandle>, GraphError> {
+        self.node_resources.get(name)
+    }
 }
 
 /**
@@ -103,9 +147,10 @@ pub struct Graph {
     connections: Vec<Connector>,
     resources: HashMap<ResourceId, Arc<ResourceHandle>>,
     resource_lookup: HashMap<(GraphNodeId, String), ResourceId>,
+    layouts: HashMap<ResourceId, ImageLayout>,
     // jobs are sorted by levels for multithreaded rendering and async compute
     jobs: Vec<Vec<Job>>,
-    recreate_jobs: bool,
+    sort_jobs: bool,
     recreate_resources: bool,
     render_context: Option<Arc<ChaosRenderContext>>,
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
@@ -122,8 +167,9 @@ impl Graph {
             connections: Vec::new(),
             resources: HashMap::new(),
             resource_lookup: HashMap::new(),
+            layouts: HashMap::new(),
             jobs: Vec::new(),
-            recreate_jobs: true,
+            sort_jobs: true,
             recreate_resources: true,
             render_context: None,
             command_buffer_allocator: None,
@@ -134,32 +180,39 @@ impl Graph {
 
     fn graph_context<'a>(
         &self,
-        graph_node_id: GraphNodeId,
+        node_id: GraphNodeId,
         command_buffer: &'a mut RecordingCommandBuffer,
-        destination: &Arc<ChaosTexture>,
-    ) -> GraphContext<'a> {
-        let resource_lookup = self
-            .resource_lookup
-            .iter()
-            .filter(|((id, _), _)| *id == graph_node_id)
-            .map(|((_, name), resource_id)| (name.clone(), *resource_id))
-            .collect::<HashMap<String, ResourceId>>();
-        let mut resources = resource_lookup
-            .iter()
-            .filter_map(|(_, resource_id)| {
-                self.resources
-                    .get(resource_id)
-                    .map(|resource| (*resource_id, resource.clone()))
-            })
-            .collect::<HashMap<ResourceId, Arc<ResourceHandle>>>();
-
-        GraphContext {
+        inputs: &[(String, ResourceId)],
+        resources: &[(String, ResourceId)],
+    ) -> Result<GraphContext<'a>, GraphError> {
+        Ok(GraphContext {
             render_size: self.render_size,
             display_size: self.display_size,
-            resources,
-            resource_lookup,
+            inputs: self.node_resources(node_id, inputs)?,
+            node_resources: self.node_resources(node_id, resources)?,
             command_buffer,
-        }
+        })
+    }
+
+    /// Swaps the resource ids resolved by `sort` for the current resource handles.
+    fn node_resources(
+        &self,
+        node_id: GraphNodeId,
+        bindings: &[(String, ResourceId)],
+    ) -> Result<NodeResources, GraphError> {
+        let entries = bindings
+            .iter()
+            .map(|(name, resource_id)| {
+                self.resources
+                    .get(resource_id)
+                    .map(|handle| (name.clone(), handle.clone()))
+                    .ok_or_else(|| GraphError::ResourceNotFound {
+                        node_id,
+                        resource_name: name.clone(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(NodeResources::new(entries))
     }
 
     pub fn initialize(&mut self, render_context: Arc<ChaosRenderContext>) {
@@ -185,8 +238,20 @@ impl Graph {
     pub fn add_node(&mut self, node: GraphNode) -> GraphNodeId {
         let node_id = self.current_node_id;
         self.current_node_id += 1;
-        self.recreate_jobs = true;
-        self.recreate_resources = self.recreate_resources || node.resource_descriptions.len() > 0;
+        self.sort_jobs = true;
+
+        for (name, resource_description) in node.resource_descriptions.iter() {
+            let resource_handle = ResourceHandle::new(resource_description, name);
+
+            // the resource handle is not valid yet
+            self.resources
+                .insert(self.current_resource_id, Arc::new(resource_handle));
+            self.resource_lookup
+                .insert((node_id, name.clone()), self.current_resource_id);
+            self.current_resource_id += 1;
+            self.recreate_resources = true;
+        }
+
         self.nodes.insert(node_id, Arc::new(node));
 
         node_id
@@ -201,6 +266,17 @@ impl Graph {
     ) -> Result<(), GraphError> {
         if source == destination {
             return Err(GraphError::ConnectionBetweenSameNode { node_id: source });
+        }
+
+        // check if there is already a connection to the destination and input
+        if self.connections.iter().any(|connection| {
+            connection.destination_id == destination
+                && connection.destination_input == destination_input
+        }) {
+            return Err(GraphError::ConnectionAlreadyExists {
+                destination_id: destination,
+                destination_input: destination_input.clone(),
+            });
         }
 
         // check if the source exists
@@ -231,11 +307,11 @@ impl Graph {
 
                         self.connections.push(Connector::new(
                             source,
-                            source_resource,
+                     x       source_resource,
                             destination,
                             destination_input,
                         ));
-                        self.recreate_jobs = true;
+                        self.sort_jobs = true;
 
                         return Ok(());
                     }
@@ -252,159 +328,120 @@ impl Graph {
         }
     }
 
+    fn validate(&self) -> Result<(), GraphError> {
+        for (&node_id, node) in &self.nodes {
+            for (input_name, _) in &node.input_descriptions {
+                if !self
+                    .connections
+                    .iter()
+                    .any(|c| c.destination_id == node_id && c.destination_input == *input_name)
+                {
+                    return Err(GraphError::InputNotConnected {
+                        node_name: node.name.clone(),
+                        input_name: input_name.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn sort(&mut self) -> Result<(), GraphError> {
+        self.validate()?;
+
         self.jobs.clear();
 
-        let mut in_degree: HashMap<GraphNodeId, usize> = HashMap::new();
-        let mut successors: HashMap<GraphNodeId, Vec<GraphNodeId>> = HashMap::new();
-        for connection in self.connections.iter() {
-            *in_degree.entry(connection.destination_id).or_insert(0) += 1;
-            successors
-                .entry(connection.source_id)
-                .or_insert_with(Vec::new)
-                .push(connection.destination_id);
-        }
+        let inputs = self.resolve_inputs()?;
+        let (parents, children) = self.create_hierarchy();
 
-        let mut ready_levels: Vec<Vec<GraphNodeId>> = vec![
-            in_degree
-                .iter()
-                .filter(|(_, &deg)| deg == 0)
-                .map(|(&node_id, _)| node_id)
-                .collect(),
-        ];
+        let levels = self.compute_levels(parents, children);
 
         let mut order: Vec<GraphNodeId> = Vec::new();
 
-        while !ready_levels.is_empty() {
-            if let Some(mut level) = ready_levels.pop() {
-                let mut next_level = vec![];
-                let mut level_jobs: Vec<Job> = vec![];
-                while let Some(node_id) = level.pop() {
-                    let node = self.nodes.get(&node_id).unwrap();
-                    order.push(node_id);
-                    // add all barriers for the current node
-                    for (input_name, kind) in node.input_descriptions.iter() {
-                        // add a barrier
-                        level_jobs.push(Job::BarrierJob {
-                            resource_id: self
-                                .resource_lookup
-                                .get(&(node_id, input_name.clone()))
-                                .unwrap()
-                                .clone(),
-                            image_layout: match kind {
-                                NodeInputKind::Texture(layout) => *layout,
-                                _ => ImageLayout::Undefined,
-                            },
-                        });
-                    }
-                    level_jobs.push(Job::NodeExecutionJob {
-                        graph_node_id: node_id,
+        for level in levels {
+            let mut level_jobs: Vec<Job> = vec![];
+            for node_id in level {
+                let node = self.nodes.get(&node_id).unwrap();
+                order.push(node_id);
+                let mut node_inputs: Vec<(String, ResourceId)> = Vec::new();
+                // add all barriers for the current node
+                for (input_name, kind) in node.input_descriptions.iter() {
+                    let resource_id = inputs
+                        .get(&(node_id, input_name.clone()))
+                        .expect("validation should have ensured this input is connected")
+                        .clone();
+
+                    // add a barrier
+                    level_jobs.push(Job::BarrierJob {
+                        resource_id,
+                        image_layout: match kind {
+                            NodeInputKind::Texture(layout) => *layout,
+                            _ => ImageLayout::Undefined,
+                        },
                     });
-                    if let Some(succs) = successors.get(&node_id) {
-                        for &succ in succs {
-                            if let Some(deg) = in_degree.get_mut(&succ) {
-                                *deg -= 1;
-                                if *deg == 0 {
-                                    next_level.push(succ);
-                                }
-                            }
-                        }
-                    }
+                    node_inputs.push((input_name.clone(), resource_id));
                 }
-                if !next_level.is_empty() {
-                    ready_levels.push(next_level);
+
+                // every resource the node owns, so it can write to them
+                let mut node_outputs: Vec<(String, ResourceId)> = Vec::new();
+                for name in node.resource_descriptions.keys() {
+                    let resource_id = self
+                        .resource_lookup
+                        .get(&(node_id, name.clone()))
+                        .ok_or_else(|| GraphError::ResourceNotFound {
+                            node_id,
+                            resource_name: name.clone(),
+                        })?;
+                    node_outputs.push((name.clone(), *resource_id));
                 }
-                self.jobs.push(level_jobs);
+
+                // the maps iterate in arbitrary order, keep the jobs stable
+                node_inputs.sort();
+                node_outputs.sort();
+
+                level_jobs.push(Job::NodeExecutionJob {
+                    graph_node_id: node_id,
+                    inputs: node_inputs,
+                    outputs: node_outputs,
+                });
             }
+
+            self.jobs.push(level_jobs);
         }
 
         if order.len() != self.nodes.len() {
-            return Err(GraphError::CircularConnection);
-        }
-
-        // self
-        //     .connections
-        //     .clone()
-        //     .into_iter()
-        //     .fold(HashMap::new(), |mut acc, connection| {
-        //         acc.entry(connection.destination_id)
-        //             .or_insert_with(Vec::new)
-        //             .push(connection.source_id);
-        //         acc
-        //     });
-
-        // while !dependency_tree.is_empty() {
-        //     // process nodes with no dependencies
-        //     let ready_nodes: Vec<GraphNodeId> = dependency_tree
-        //         .iter()
-        //         .filter(|(_, deps)| deps.is_empty())
-        //         .map(|(&node_id, _)| node_id)
-        //         .collect();
-
-        //     if ready_nodes.is_empty() {
-        //         // Circular dependency detected
-        //         break;
-        //     }
-
-        //     for node_id in ready_nodes {
-        //         // if the node requires inputs then add a barrier for those things
-        //         let node = &self.nodes[&node_id];
-        //         for (input_name, kind) in node.input_descriptions.iter() {
-        //             // add a barrier
-        //             self.jobs.push(Job::BarrierJob {
-        //                 resource_id: self
-        //                     .resource_lookup
-        //                     .get(&(node_id, input_name.clone()))
-        //                     .unwrap()
-        //                     .clone(),
-        //                 image_layout: match kind {
-        //                     NodeInputKind::Texture(layout) => *layout,
-        //                     _ => ImageLayout::Undefined,
-        //                 },
-        //             });
-        //         }
-        //         self.jobs.push(Job::NodeExecutionJob {
-        //             graph_node_id: node_id,
-        //         });
-        //         dependency_tree.remove(&node_id);
-        //         for deps in dependency_tree.values_mut() {
-        //             deps.retain(|&dep| dep != node_id);
-        //         }
-        //     }
-        // }
-
-        // if !dependency_tree.is_empty() {
-        //     Err(GraphError::CircularConnection)
-        // } else {
-        //     Ok(())
-        // }
-        Ok(())
-    }
-
-    fn create_resources(
-        &mut self,
-        render_context: &Arc<ChaosRenderContext>,
-    ) -> Result<(), GraphError> {
-        self.resources.clear();
-
-        for (node_id, node) in &self.nodes {
-            for (name, resource_description) in node.resource_descriptions.iter() {
-                let mut resource_handle = ResourceHandle::new(resource_description, name);
-                resource_handle.recreate_resource(
-                    self.display_size,
-                    self.render_size,
-                    render_context.clone(),
-                );
-                self.resources
-                    .insert(self.current_resource_id, Arc::new(resource_handle));
-                self.resource_lookup
-                    .insert((*node_id, name.clone()), self.current_resource_id);
-                self.current_resource_id += 1;
+            let mut erroneous_nodes = vec![];
+            for (&node_id, node) in &self.nodes {
+                if !order.contains(&node_id) {
+                    erroneous_nodes.push(node.name.clone());
+                }
             }
+            return Err(GraphError::CircularConnection(erroneous_nodes));
         }
-
+        self.sort_jobs = false;
         Ok(())
     }
+
+    // fn create_gpu_resources(&mut self, render_context: &Arc<ChaosRenderContext>) {
+    //     self.resources.clear();
+
+    //     for (node_id, node) in &self.nodes {
+    //         for (name, resource_description) in node.resource_descriptions.iter() {
+    //             let mut resource_handle = ResourceHandle::new(resource_description, name);
+    //             resource_handle.recreate_resource(
+    //                 self.display_size,
+    //                 self.render_size,
+    //                 render_context.clone(),
+    //             );
+    //             self.resources
+    //                 .insert(self.current_resource_id, Arc::new(resource_handle));
+    //             self.resource_lookup
+    //                 .insert((*node_id, name.clone()), self.current_resource_id);
+    //             self.current_resource_id += 1;
+    //         }
+    //     }
+    //     self.recreate_resources = false;
+    // }
 
     pub fn render(
         &mut self,
@@ -413,13 +450,22 @@ impl Graph {
     ) -> Result<(), GraphError> {
         // important to create resources before jobs
         if self.recreate_resources {
-            self.create_resources(render_context)?;
+            for (resource_id, resource_handle) in self.resources.iter_mut() {
+                let mut new_handle =
+                    ResourceHandle::new(&resource_handle.description, &resource_handle.name);
+                new_handle.recreate_resource(
+                    self.display_size,
+                    self.render_size,
+                    render_context.clone(),
+                );
+                *resource_handle = Arc::new(new_handle);
+                self.layouts.insert(*resource_id, ImageLayout::Undefined);
+            }
             self.recreate_resources = false;
         }
 
-        if self.recreate_jobs {
+        if self.sort_jobs {
             self.sort()?;
-            self.recreate_jobs = false;
         }
 
         if self.command_buffer_allocator.is_none() {
@@ -436,19 +482,32 @@ impl Graph {
             },
         )?;
 
-        for level in self.jobs.clone() {
-            for job in &level {
+        for level in &self.jobs {
+            for job in level {
                 match job {
-                    Job::BarrierJob { .. } => {
-                        self.add_resource_barrier(&job, &mut command_buffer)?
-                    }
-                    Job::NodeExecutionJob { graph_node_id } => {
+                    Job::BarrierJob {
+                        resource_id,
+                        image_layout,
+                    } => Self::add_resource_barrier(
+                        *image_layout,
+                        *resource_id,
+                        &mut self.layouts,
+                        &self.resources,
+                        &mut command_buffer,
+                    )?,
+                    Job::NodeExecutionJob {
+                        graph_node_id,
+                        inputs,
+                        outputs,
+                    } => {
                         if let Some(node) = self.nodes.get(graph_node_id) {
-                            self.execute_graph(
+                            self.execute_node(
                                 destination,
                                 &mut command_buffer,
                                 graph_node_id,
                                 node,
+                                inputs,
+                                outputs,
                             )?;
                         }
                     }
@@ -459,15 +518,15 @@ impl Graph {
         Ok(())
     }
 
-    fn execute_graph(
+    fn execute_node(
         &self,
-        destination: &Arc<ChaosTexture>,
+        _destination: &Arc<ChaosTexture>,
         command_buffer: &mut RecordingCommandBuffer,
         graph_node_id: &usize,
         node: &Arc<GraphNode>,
+        inputs: &[(String, ResourceId)],
+        outputs: &[(String, ResourceId)],
     ) -> Result<(), GraphError> {
-        let graph_context = self.graph_context(*graph_node_id, command_buffer, &destination);
-
         let rendering_info = RenderingInfo {
             // Fill in the necessary fields for the render pass begin info
             ..Default::default()
@@ -476,6 +535,9 @@ impl Graph {
             command_buffer.begin_rendering(&rendering_info)?;
         };
 
+        // the context holds the command buffer borrow, so it is created after begin_rendering
+        // and consumed by execute before end_rendering
+        let graph_context = self.graph_context(*graph_node_id, command_buffer, inputs, outputs)?;
         node.node_type.execute(graph_context)?;
 
         unsafe {
@@ -485,62 +547,86 @@ impl Graph {
     }
 
     fn add_resource_barrier(
-        &mut self,
-        job: &Job,
+        new_layout: ImageLayout,
+        resource_id: ResourceId,
+        layouts: &mut HashMap<ResourceId, ImageLayout>,
+        resources: &HashMap<ResourceId, Arc<ResourceHandle>>,
         command_buffer: &mut RecordingCommandBuffer,
     ) -> Result<(), GraphError> {
-        if let Job::BarrierJob {
-            image_layout,
-            resource_id,
-        } = job
-        {
-            match self.resources.get_mut(resource_id).and_then(Arc::get_mut) {
-                Some(resource_handle) => {
-                    match resource_handle.resource.as_mut().and_then(Arc::get_mut) {
-                        Some(Resource::Texture(image)) => {
-                            let mut barrier = ImageMemoryBarrier::image(image.image());
-                            barrier.old_layout = image.get_image_layout();
-                            barrier.new_layout = image_layout.clone();
-                            unsafe {
-                                command_buffer.pipeline_barrier(&DependencyInfo {
-                                    image_memory_barriers: vec![barrier].into(),
-                                    ..Default::default()
-                                })?;
-                            }
-                            if let Some(image) = Arc::get_mut(image) {
-                                image.set_image_layout(image_layout.clone());
-                            }
-                            Ok(())
-                        }
-                        _ => Err(GraphError::BarrierError(
-                            "Resource is not a texture".to_string(),
-                        )),
-                    }
-                }
-                _ => Err(GraphError::BarrierError("Resource not found".to_string())),
-            }
-        } else {
-            Err(GraphError::BarrierError(
-                "Job is not a barrier job".to_string(),
-            ))
+        let old_layout = match layouts.get(&resource_id) {
+            Some(layout) => layout.clone(),
+            None => ImageLayout::Undefined,
+        };
+        if new_layout == old_layout {
+            return Ok(());
         }
+        match resources.get(&resource_id) {
+            Some(resource_handle) => match resource_handle.resource.clone() {
+                Some(resource) => {
+                    let image = match resource.as_ref() {
+                        Resource::Texture(image) => image,
+                        _ => {
+                            return Err(GraphError::BarrierError(
+                                "Resource is not a texture".to_string(),
+                            ));
+                        }
+                    };
+                    let mut barrier = ImageMemoryBarrier::image(image.image());
+                    barrier.old_layout = old_layout;
+                    barrier.new_layout = new_layout;
+                    unsafe {
+                        command_buffer.pipeline_barrier(&DependencyInfo {
+                            image_memory_barriers: vec![barrier].into(),
+                            ..Default::default()
+                        })?;
+                    }
+                    layouts.insert(resource_id, new_layout);
+                    Ok(())
+                }
+                None => Err(GraphError::BarrierError(
+                    "Resource is not initialized".to_string(),
+                )),
+            },
+            _ => Err(GraphError::BarrierError("Resource not found".to_string())),
+        }
+    }
+
+    fn create_hierarchy(
+        &self,
+    ) -> (
+        HashMap<GraphNodeId, Vec<GraphNodeId>>,
+        HashMap<GraphNodeId, Vec<GraphNodeId>>,
+    ) {
+        let mut parents: HashMap<GraphNodeId, Vec<GraphNodeId>> =
+            self.nodes.iter().map(|(&id, _)| (id, Vec::new())).collect();
+        let mut children: HashMap<GraphNodeId, Vec<GraphNodeId>> = parents.clone();
+
+        for connection in &self.connections {
+            parents
+                .entry(connection.destination_id)
+                .or_default()
+                .push(connection.source_id);
+            children
+                .entry(connection.source_id)
+                .or_default()
+                .push(connection.destination_id);
+        }
+        (parents, children)
     }
 
     /// Groups nodes into dependency levels using Kahn's algorithm: every node in a level only
     /// depends on nodes from earlier levels, so nodes within a level can run in parallel.
     /// Nodes that are part of (or downstream of) a cycle never reach in-degree 0 and are
     /// left out of the result. Each level is sorted by node id to keep the output stable.
-    fn compute_levels(&self) -> Vec<Vec<GraphNodeId>> {
-        let mut in_degree: HashMap<GraphNodeId, usize> =
-            self.nodes.keys().map(|&node_id| (node_id, 0)).collect();
-        let mut successors: HashMap<GraphNodeId, Vec<GraphNodeId>> = HashMap::new();
-        for connection in &self.connections {
-            *in_degree.entry(connection.destination_id).or_insert(0) += 1;
-            successors
-                .entry(connection.source_id)
-                .or_default()
-                .push(connection.destination_id);
-        }
+    fn compute_levels(
+        &self,
+        parents: HashMap<GraphNodeId, Vec<GraphNodeId>>,
+        children: HashMap<GraphNodeId, Vec<GraphNodeId>>,
+    ) -> Vec<Vec<GraphNodeId>> {
+        let mut in_degree: HashMap<GraphNodeId, usize> = parents
+            .iter()
+            .map(|(nodeid, predecessors)| (*nodeid, predecessors.len()))
+            .collect();
 
         let mut current: Vec<GraphNodeId> = in_degree
             .iter()
@@ -553,7 +639,7 @@ impl Graph {
             current.sort_unstable();
             let mut next = Vec::new();
             for node_id in &current {
-                for &successor in successors.get(node_id).into_iter().flatten() {
+                for &successor in children.get(node_id).into_iter().flatten() {
                     if let Some(deg) = in_degree.get_mut(&successor) {
                         *deg -= 1;
                         if *deg == 0 {
@@ -569,15 +655,39 @@ impl Graph {
         levels
     }
 
+    fn resolve_inputs(&self) -> Result<HashMap<(GraphNodeId, String), ResourceId>, GraphError> {
+        let mut resolved_inputs = HashMap::new();
+        for connection in &self.connections {
+            let resource_id = self
+                .resource_lookup
+                .get(&(connection.source_id, connection.source_resource.clone()))
+                .ok_or(GraphError::ResourceNotFound {
+                    node_id: connection.source_id,
+                    resource_name: connection.source_resource.clone(),
+                })?;
+            resolved_inputs.insert(
+                (
+                    connection.destination_id,
+                    connection.destination_input.clone(),
+                ),
+                *resource_id,
+            );
+        }
+        Ok(resolved_inputs)
+    }
+
     /// Builds a Mermaid flowchart representation of the graph: one box per node and one
     /// labeled edge per connection, showing which output resource feeds which input.
     /// Nodes are grouped into one subgraph per dependency level; nodes in the same level
     /// have no dependency on each other and can be parallelized. Nodes that can't be
     /// scheduled because of a cycle are shown in a separate "Unscheduled" subgraph.
+    /// Each node is coloured by the queue (graphics/compute/transfer) it is meant to run on.
     pub fn to_mermaid(&self) -> String {
         let mut mermaid = String::from("```mermaid\nflowchart TD\n");
 
-        let levels = self.compute_levels();
+        let (parents, children) = self.create_hierarchy();
+        let levels = self.compute_levels(parents, children);
+
         let scheduled: HashSet<GraphNodeId> = levels.iter().flatten().copied().collect();
         let mut unscheduled: Vec<GraphNodeId> = self
             .nodes
@@ -589,12 +699,12 @@ impl Graph {
 
         // Declare every node up front so isolated (unconnected) nodes still show up.
         for (index, level) in levels.iter().enumerate() {
-            let label = if level.len() > 1 {
-                format!("Level {} (can run in parallel)", index)
-            } else {
-                format!("Level {}", index)
-            };
-            self.push_mermaid_subgraph(&mut mermaid, &format!("level_{}", index), &label, level);
+            self.push_mermaid_subgraph(
+                &mut mermaid,
+                &format!("level_{}", index),
+                &format!("Level {}", index),
+                level,
+            );
         }
         if !unscheduled.is_empty() {
             self.push_mermaid_subgraph(
@@ -624,6 +734,16 @@ impl Graph {
             ));
         }
 
+        if !self.nodes.is_empty() {
+            for queue in QueueKind::ALL {
+                mermaid.push_str(&format!(
+                    "    classDef {} {}\n",
+                    queue.name(),
+                    queue.mermaid_style()
+                ));
+            }
+        }
+
         mermaid.push_str("```");
         return mermaid;
     }
@@ -637,9 +757,12 @@ impl Graph {
     ) {
         mermaid.push_str(&format!("    subgraph {}[\"{}\"]\n", id, label));
         for node_id in node_ids {
+            let node = &self.nodes[node_id];
             mermaid.push_str(&format!(
-                "        node_{}[\"{}\"]\n",
-                node_id, self.nodes[node_id].name
+                "        node_{}[\"{}\"]:::{}\n",
+                node_id,
+                node.name,
+                node.queue.name()
             ));
         }
         mermaid.push_str("    end\n");
@@ -694,8 +817,16 @@ mod tests {
     #[test]
     fn test_to_mermaid_graph_with_connection() {
         let mut graph = Graph::new([800, 600]);
-        let source_id = graph.add_node(test_node(vec![], vec!["source_output".to_string()]));
-        let destination_id = graph.add_node(test_node(vec!["input".to_string()], vec![]));
+        let source_id = graph.add_node(test_named_node(
+            "Source Node".to_string(),
+            vec![],
+            vec!["source_output".to_string()],
+        ));
+        let destination_id = graph.add_node(test_named_node(
+            "Destination Node".to_string(),
+            vec!["input".to_string()],
+            vec![],
+        ));
 
         let result = graph.connect(
             source_id,
@@ -748,15 +879,33 @@ mod tests {
             .connect(right, "out".to_string(), join, "b".to_string())
             .unwrap();
 
+        let (parents, children) = graph.create_hierarchy();
+
         assert_eq!(
-            graph.compute_levels(),
+            graph.compute_levels(parents, children),
             vec![vec![root], vec![left, right], vec![join]]
         );
 
         let mermaid = graph.to_mermaid();
         assert!(mermaid.contains("subgraph level_0[\"Level 0\"]"));
-        assert!(mermaid.contains("subgraph level_1[\"Level 1 (can run in parallel)\"]"));
+        assert!(mermaid.contains("subgraph level_1[\"Level 1\"]"));
         assert!(mermaid.contains("subgraph level_2[\"Level 2\"]"));
+    }
+
+    #[test]
+    fn test_to_mermaid_colours_nodes_by_queue() {
+        let mut graph = Graph::new([800, 600]);
+        let gfx = graph.add_node(test_named_node("Gfx".to_string(), vec![], vec![]));
+        let comp = graph.add_node(
+            test_named_node("Comp".to_string(), vec![], vec![]).with_queue(QueueKind::Compute),
+        );
+
+        let mermaid = graph.to_mermaid();
+        assert!(mermaid.contains(&format!("node_{}[\"Gfx\"]:::graphics", gfx)));
+        assert!(mermaid.contains(&format!("node_{}[\"Comp\"]:::compute", comp)));
+        assert!(mermaid.contains("classDef graphics"));
+        assert!(mermaid.contains("classDef compute"));
+        assert!(mermaid.contains("classDef transfer"));
     }
 
     #[test]
@@ -764,7 +913,8 @@ mod tests {
         let mut graph = Graph::new([800, 600]);
         let a = graph.add_node(test_node(vec![], vec![]));
         let b = graph.add_node(test_node(vec![], vec![]));
-        assert_eq!(graph.compute_levels(), vec![vec![a, b]]);
+        let (parents, children) = graph.create_hierarchy();
+        assert_eq!(graph.compute_levels(parents, children), vec![vec![a, b]]);
     }
 
     #[test]
@@ -788,9 +938,192 @@ mod tests {
             .connect(b, "out".to_string(), a, "in".to_string())
             .unwrap();
 
-        assert_eq!(graph.compute_levels(), vec![vec![free]]);
+        let (parents, children) = graph.create_hierarchy();
+        assert_eq!(graph.compute_levels(parents, children), vec![vec![free]]);
         let mermaid = graph.to_mermaid();
         assert!(mermaid.contains("subgraph unscheduled"));
+    }
+
+    fn executed_node_ids_per_level(graph: &Graph) -> Vec<Vec<GraphNodeId>> {
+        graph
+            .jobs
+            .iter()
+            .map(|level| {
+                level
+                    .iter()
+                    .filter_map(|job| match job {
+                        Job::NodeExecutionJob { graph_node_id, .. } => Some(*graph_node_id),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_sort_schedules_isolated_nodes_in_id_order() {
+        let mut graph = Graph::new([800, 600]);
+        let ids: Vec<GraphNodeId> = (0..5)
+            .map(|_| graph.add_node(test_node(vec![], vec![])))
+            .collect();
+
+        assert!(graph.sort().is_ok());
+        assert_eq!(executed_node_ids_per_level(&graph), vec![ids]);
+    }
+
+    #[test]
+    fn test_sort_orders_diamond_by_levels() {
+        let mut graph = Graph::new([800, 600]);
+        let root = graph.add_node(test_named_node(
+            "Root".to_string(),
+            vec![],
+            vec!["out".to_string()],
+        ));
+        let left = graph.add_node(test_named_node(
+            "Left".to_string(),
+            vec!["in".to_string()],
+            vec!["out".to_string()],
+        ));
+        let right = graph.add_node(test_named_node(
+            "Right".to_string(),
+            vec!["in".to_string()],
+            vec!["out".to_string()],
+        ));
+        let join = graph.add_node(test_named_node(
+            "Join".to_string(),
+            vec!["a".to_string(), "b".to_string()],
+            vec![],
+        ));
+        graph
+            .connect(root, "out".to_string(), left, "in".to_string())
+            .unwrap();
+        graph
+            .connect(root, "out".to_string(), right, "in".to_string())
+            .unwrap();
+        graph
+            .connect(left, "out".to_string(), join, "a".to_string())
+            .unwrap();
+        graph
+            .connect(right, "out".to_string(), join, "b".to_string())
+            .unwrap();
+
+        assert!(graph.sort().is_ok());
+        assert_eq!(
+            executed_node_ids_per_level(&graph),
+            vec![vec![root], vec![left, right], vec![join]]
+        );
+    }
+
+    fn execution_bindings(
+        graph: &Graph,
+        node_id: GraphNodeId,
+    ) -> (Vec<(String, ResourceId)>, Vec<(String, ResourceId)>) {
+        graph
+            .jobs
+            .iter()
+            .flatten()
+            .find_map(|job| match job {
+                Job::NodeExecutionJob {
+                    graph_node_id,
+                    inputs,
+                    outputs,
+                } if *graph_node_id == node_id => Some((inputs.clone(), outputs.clone())),
+                _ => None,
+            })
+            .expect("node should have an execution job")
+    }
+
+    #[test]
+    fn test_sort_binds_inputs_by_destination_name_and_outputs_by_own_name() {
+        let mut graph = Graph::new([800, 600]);
+        let source = graph.add_node(test_named_node(
+            "Source".to_string(),
+            vec![],
+            vec!["source_out".to_string()],
+        ));
+        let sink = graph.add_node(test_named_node(
+            "Sink".to_string(),
+            vec!["albedo".to_string()],
+            vec!["sink_out".to_string()],
+        ));
+        graph
+            .connect(source, "source_out".to_string(), sink, "albedo".to_string())
+            .unwrap();
+
+        assert!(graph.sort().is_ok());
+
+        let source_out = graph.resource_lookup[&(source, "source_out".to_string())];
+        let sink_out = graph.resource_lookup[&(sink, "sink_out".to_string())];
+        let (source_inputs, source_outputs) = execution_bindings(&graph, source);
+        let (sink_inputs, sink_outputs) = execution_bindings(&graph, sink);
+
+        assert!(source_inputs.is_empty());
+        assert_eq!(source_outputs, vec![("source_out".to_string(), source_out)]);
+        // the sink asks for "albedo", not for the name of the upstream output
+        assert_eq!(sink_inputs, vec![("albedo".to_string(), source_out)]);
+        assert_eq!(sink_outputs, vec![("sink_out".to_string(), sink_out)]);
+    }
+
+    #[test]
+    fn test_sort_binds_internal_resources_but_does_not_expose_them() {
+        let mut graph = Graph::new([800, 600]);
+        let node = graph.add_node(
+            GraphNode::new("Node".to_string(), TestNode {})
+                .with_resource(
+                    "exposed".to_string(),
+                    ResourceDescription::TestTextureResource,
+                    true,
+                )
+                .with_resource(
+                    "scratch".to_string(),
+                    ResourceDescription::TestTextureResource,
+                    false,
+                ),
+        );
+        let consumer = graph.add_node(test_named_node(
+            "Consumer".to_string(),
+            vec!["in".to_string()],
+            vec![],
+        ));
+
+        assert!(
+            graph
+                .connect(node, "scratch".to_string(), consumer, "in".to_string())
+                .is_err(),
+            "internal resources can't be connected to other nodes"
+        );
+        graph
+            .connect(node, "exposed".to_string(), consumer, "in".to_string())
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        let exposed = graph.resource_lookup[&(node, "exposed".to_string())];
+        let scratch = graph.resource_lookup[&(node, "scratch".to_string())];
+        let (_, outputs) = execution_bindings(&graph, node);
+        assert_eq!(
+            outputs,
+            vec![
+                ("exposed".to_string(), exposed),
+                ("scratch".to_string(), scratch)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_node_resources_get_by_name() {
+        let handle = Arc::new(ResourceHandle::new(
+            &ResourceDescription::TestTextureResource,
+            "hdr",
+        ));
+        let resources = NodeResources::new(vec![("color".to_string(), handle.clone())]);
+
+        assert!(Arc::ptr_eq(resources.get("color").unwrap(), &handle));
+        assert_eq!(
+            resources.get("hdr").unwrap_err(),
+            GraphError::NodeResourceNotFound {
+                resource_name: "hdr".to_string()
+            }
+        );
     }
 
     #[test]
@@ -832,11 +1165,15 @@ mod tests {
             result.is_err(),
             "Expected sort to fail due to circular connection"
         );
-        assert_eq!(
-            result.err().unwrap(),
-            GraphError::CircularConnection,
-            "Expected circular connection to be detected",
-        );
+        match result {
+            Err(GraphError::CircularConnection(nodes)) => {
+                // check if the nodes involved in the circular connection are as expected
+                assert!(nodes.contains(&"Node A".to_string()));
+                assert!(nodes.contains(&"Node B".to_string()));
+                assert!(nodes.contains(&"Node C".to_string()))
+            }
+            _ => panic!("Expected circular connection error"),
+        }
     }
 
     #[test]

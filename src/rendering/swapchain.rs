@@ -46,7 +46,6 @@ pub fn get_swapchain_and_backbuffers(
         backbuffers.push(Arc::new(ChaosTexture::from_existing(
             format!("Backbuffer {}", backbuffers.len()),
             raw_backbuffer,
-            vulkano::image::ImageLayout::PresentSrc,
         )));
     }
     Ok((swapchain, backbuffers))

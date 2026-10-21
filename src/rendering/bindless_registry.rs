@@ -7,11 +7,11 @@ use vulkano::descriptor_set::{
     layout::{DescriptorSetLayout, DescriptorSetLayoutCreateInfo},
 };
 
-use crate::rendering::{context::ChaosRenderContext, texture::ChaosTexture, sampler::ChaosSampler};
+use crate::rendering::{context::ChaosRenderContext, sampler::ChaosSampler, texture::ChaosTexture};
 
 pub struct BindlessRegistry {
     descriptor_set: Arc<DescriptorSet>, // the single persistent update-after-bind set
-    set_layout: Arc<DescriptorSetLayout>,
+    _set_layout: Arc<DescriptorSetLayout>,
 
     slots: Vec<Option<BindlessSlot>>, // dense, index == bindless slot id; holds the strong refs
     generations: Vec<usize>,          // bumped every free/reuse, to catch stale handles
@@ -68,7 +68,7 @@ impl BindlessRegistry {
 
         Self {
             descriptor_set: descriptor_set.clone(),
-            set_layout: descriptor_layout.clone(),
+            _set_layout: descriptor_layout.clone(),
 
             slots: Vec::with_capacity(capacity.unwrap_or(DEFAULT_INITIAL_CAPACITY)),
             generations: Vec::with_capacity(capacity.unwrap_or(DEFAULT_INITIAL_CAPACITY)),

@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use vulkano::{
-    format::Format,
-    image::{ImageLayout, ImageUsage},
-};
+use vulkano::{format::Format, image::ImageUsage};
 
 use crate::rendering::{buffer::ChaosBuffer, context::ChaosRenderContext, texture::ChaosTexture};
 
@@ -22,7 +19,6 @@ pub struct TextureDescription {
     pub dimensions: [u32; 3],
     pub mip_levels: u32,
     pub array_size: u32,
-    pub image_layout: ImageLayout,
     pub dimension_calculations: [TextureSizeType; 3],
     pub usage: ImageUsage,
 }
@@ -100,7 +96,6 @@ impl ResourceHandle {
                     desc.array_size,
                     desc.format,
                     desc.usage,
-                    desc.image_layout,
                     render_context,
                 );
                 self.resource = Some(Arc::new(Resource::Texture(Arc::new(image))));
