@@ -1,10 +1,14 @@
 use std::sync::Arc;
 
-use vulkano::{format::Format, image::ImageUsage};
+use vulkano::{
+    format::Format,
+    image::{ImageLayout, ImageUsage},
+    sync::{AccessFlags, PipelineStages},
+};
 
 use crate::rendering::{buffer::ChaosBuffer, context::ChaosRenderContext, texture::ChaosTexture};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextureSizeType {
     Fixed,
     PercentageOfRenderWidth,
@@ -21,6 +25,88 @@ pub struct TextureDescription {
     pub array_size: u32,
     pub dimension_calculations: [TextureSizeType; 3],
     pub usage: ImageUsage,
+}
+
+#[derive(Debug, Clone)]
+pub enum ResourceUsage {
+    ColorAttachment,
+    DepthAttachment,
+    StorageWrite,
+    TransferDst,
+}
+
+impl ResourceUsage {
+    pub fn layout(&self) -> ImageLayout {
+        match self {
+            ResourceUsage::ColorAttachment => ImageLayout::ColorAttachmentOptimal,
+            ResourceUsage::DepthAttachment => ImageLayout::DepthStencilAttachmentOptimal,
+            ResourceUsage::StorageWrite => ImageLayout::General,
+            ResourceUsage::TransferDst => ImageLayout::TransferDstOptimal,
+        }
+    }
+
+    pub fn required_usage(&self) -> ImageUsage {
+        match self {
+            ResourceUsage::ColorAttachment => ImageUsage::COLOR_ATTACHMENT,
+            ResourceUsage::DepthAttachment => ImageUsage::DEPTH_STENCIL_ATTACHMENT,
+            ResourceUsage::StorageWrite => ImageUsage::STORAGE,
+            ResourceUsage::TransferDst => ImageUsage::TRANSFER_DST,
+        }
+    }
+}
+
+/// The pipeline stages, read accesses and write accesses an image can be involved in while it
+/// is in `layout`. The graph doesn't know which shader stage a node uses, so shader layouts
+/// cover every stage that can touch them.
+/// The previous layout only contributes its writes to a barrier (reads need no availability
+/// operation), the new layout contributes everything it needs to see.
+pub fn layout_scope(layout: ImageLayout) -> Option<(PipelineStages, AccessFlags, AccessFlags)> {
+    let none = AccessFlags::empty();
+    Some(match layout {
+        // nothing to make available, but wait for earlier users of the memory
+        ImageLayout::Undefined => (PipelineStages::ALL_COMMANDS, none, none),
+        ImageLayout::ColorAttachmentOptimal => (
+            PipelineStages::COLOR_ATTACHMENT_OUTPUT,
+            AccessFlags::COLOR_ATTACHMENT_READ,
+            AccessFlags::COLOR_ATTACHMENT_WRITE,
+        ),
+        ImageLayout::DepthStencilAttachmentOptimal => (
+            PipelineStages::EARLY_FRAGMENT_TESTS | PipelineStages::LATE_FRAGMENT_TESTS,
+            AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
+            AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+        ),
+        ImageLayout::DepthStencilReadOnlyOptimal => (
+            PipelineStages::EARLY_FRAGMENT_TESTS
+                | PipelineStages::LATE_FRAGMENT_TESTS
+                | PipelineStages::FRAGMENT_SHADER,
+            AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | AccessFlags::SHADER_SAMPLED_READ,
+            none,
+        ),
+        ImageLayout::ShaderReadOnlyOptimal => (
+            PipelineStages::FRAGMENT_SHADER | PipelineStages::COMPUTE_SHADER,
+            AccessFlags::SHADER_SAMPLED_READ,
+            none,
+        ),
+        ImageLayout::TransferSrcOptimal => (
+            PipelineStages::ALL_TRANSFER,
+            AccessFlags::TRANSFER_READ,
+            none,
+        ),
+        ImageLayout::TransferDstOptimal => (
+            PipelineStages::ALL_TRANSFER,
+            none,
+            AccessFlags::TRANSFER_WRITE,
+        ),
+        ImageLayout::General => (
+            PipelineStages::ALL_COMMANDS,
+            AccessFlags::MEMORY_READ,
+            AccessFlags::MEMORY_WRITE,
+        ),
+        ImageLayout::PresentSrc => (PipelineStages::BOTTOM_OF_PIPE, none, none),
+        _ => {
+            return None;
+        }
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -124,5 +210,21 @@ impl ResourceHandle {
         self.recreate_resource(display_size, render_size, render_context);
 
         self.resource.as_ref().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_layout_scope_writes_only_for_writable_layouts() {
+        let (_, _, shader_writes) = layout_scope(ImageLayout::ShaderReadOnlyOptimal).unwrap();
+        let (_, _, color_writes) = layout_scope(ImageLayout::ColorAttachmentOptimal).unwrap();
+
+        assert!(shader_writes.is_empty());
+        assert_eq!(color_writes, AccessFlags::COLOR_ATTACHMENT_WRITE);
+        assert!(layout_scope(ImageLayout::PresentSrc).is_some());
+        assert!(layout_scope(ImageLayout::Preinitialized).is_none());
     }
 }

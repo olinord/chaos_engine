@@ -8,7 +8,7 @@ use vulkano::image::ImageLayout;
 
 use crate::rendering::graph::{
     graph::{GraphContext, GraphError},
-    resource::ResourceDescription,
+    resource::{ResourceDescription, ResourceUsage},
 };
 
 pub type GraphNodeId = usize;
@@ -64,6 +64,7 @@ pub struct GraphNode {
     pub node_type: Arc<dyn NodeType>,
     pub input_descriptions: HashMap<String, NodeInputKind>,
     pub resource_descriptions: HashMap<String, ResourceDescription>,
+    pub resource_usages: HashMap<String, ResourceUsage>,
     pub outputs: HashSet<String>,
 }
 
@@ -81,6 +82,7 @@ impl GraphNode {
             node_type: Arc::new(node_type),
             input_descriptions: HashMap::new(),
             resource_descriptions: HashMap::new(),
+            resource_usages: HashMap::new(),
             outputs: HashSet::new(),
         }
     }
@@ -109,13 +111,13 @@ impl GraphNode {
         mut self,
         name: String,
         description: ResourceDescription,
+        usage: ResourceUsage,
         is_output: bool,
     ) -> Self {
-        if self
-            .resource_descriptions
-            .insert(name.clone(), description)
-            .is_some()
-        {
+        let overridden_description = self.resource_descriptions.insert(name.clone(), description);
+        let overridden_usage = self.resource_usages.insert(name.clone(), usage);
+
+        if overridden_description.is_some() || overridden_usage.is_some() {
             log::error!(
                 "GraphNode {} with the same resource name already exists {}",
                 self.name,

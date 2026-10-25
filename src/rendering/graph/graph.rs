@@ -9,14 +9,15 @@ use vulkano::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
     },
     image::ImageLayout,
-    sync::{DependencyInfo, ImageMemoryBarrier},
+    sync::{AccessFlags, BufferMemoryBarrier, DependencyInfo, ImageMemoryBarrier, PipelineStages},
 };
 
+use crate::rendering::graph::resource::ResourceDescription;
 use crate::rendering::{
     context::ChaosRenderContext,
     graph::{
-        node::{Connector, GraphNode, GraphNodeId, NodeInputKind, QueueKind},
-        resource::{Resource, ResourceHandle},
+        node::{BufferUsage, Connector, GraphNode, GraphNodeId, NodeInputKind, QueueKind},
+        resource::{Resource, ResourceHandle, TextureSizeType, layout_scope},
     },
     texture::ChaosTexture,
 };
@@ -82,6 +83,10 @@ pub enum Job {
     BarrierJob {
         resource_id: ResourceId,
         image_layout: ImageLayout,
+    },
+    BufferBarrierJob {
+        resource_id: ResourceId,
+        usage: BufferUsage,
     },
     // inputs are keyed by the node's own input name, outputs by the node's resource name.
     // Only ids are stored since the handles are replaced whenever the resources are recreated.
@@ -156,6 +161,8 @@ pub struct Graph {
     command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     render_size: [u32; 2],
     display_size: [u32; 2],
+    render_size_changed: bool,
+    display_size_changed: bool,
 }
 
 impl Graph {
@@ -175,6 +182,8 @@ impl Graph {
             command_buffer_allocator: None,
             render_size,
             display_size: render_size,
+            render_size_changed: true,
+            display_size_changed: true,
         }
     }
 
@@ -225,13 +234,21 @@ impl Graph {
     }
 
     pub fn set_render_size(&mut self, render_size: [u32; 2]) {
+        if self.render_size == render_size {
+            return;
+        }
         self.render_size = render_size;
         self.recreate_resources = true;
+        self.render_size_changed = true;
     }
 
     pub fn set_display_size(&mut self, display_size: [u32; 2]) {
+        if self.display_size == display_size {
+            return;
+        }
         self.display_size = display_size;
         self.recreate_resources = true;
+        self.display_size_changed = true;
     }
 
     // nodes are moved into the graph so they don't get updated outside of the graph
@@ -307,7 +324,7 @@ impl Graph {
 
                         self.connections.push(Connector::new(
                             source,
-                     x       source_resource,
+                            source_resource,
                             destination,
                             destination_input,
                         ));
@@ -372,14 +389,33 @@ impl Graph {
                         .clone();
 
                     // add a barrier
+                    match kind {
+                        NodeInputKind::Texture(layout) => level_jobs.push(Job::BarrierJob {
+                            resource_id,
+                            image_layout: *layout,
+                        }),
+                        NodeInputKind::Buffer(usage) => level_jobs.push(Job::BufferBarrierJob {
+                            resource_id,
+                            usage: usage.clone(),
+                        }),
+                        #[cfg(test)]
+                        NodeInputKind::TestKind => {}
+                    }
+                    node_inputs.push((input_name.clone(), resource_id));
+                }
+
+                for (name, usage) in node.resource_usages.iter() {
+                    let resource_id = self
+                        .resource_lookup
+                        .get(&(node_id, name.clone()))
+                        .expect("validation should have ensured this resource exists")
+                        .clone();
+
+                    // add a barrier
                     level_jobs.push(Job::BarrierJob {
                         resource_id,
-                        image_layout: match kind {
-                            NodeInputKind::Texture(layout) => *layout,
-                            _ => ImageLayout::Undefined,
-                        },
+                        image_layout: usage.layout(),
                     });
-                    node_inputs.push((input_name.clone(), resource_id));
                 }
 
                 // every resource the node owns, so it can write to them
@@ -422,27 +458,6 @@ impl Graph {
         Ok(())
     }
 
-    // fn create_gpu_resources(&mut self, render_context: &Arc<ChaosRenderContext>) {
-    //     self.resources.clear();
-
-    //     for (node_id, node) in &self.nodes {
-    //         for (name, resource_description) in node.resource_descriptions.iter() {
-    //             let mut resource_handle = ResourceHandle::new(resource_description, name);
-    //             resource_handle.recreate_resource(
-    //                 self.display_size,
-    //                 self.render_size,
-    //                 render_context.clone(),
-    //             );
-    //             self.resources
-    //                 .insert(self.current_resource_id, Arc::new(resource_handle));
-    //             self.resource_lookup
-    //                 .insert((*node_id, name.clone()), self.current_resource_id);
-    //             self.current_resource_id += 1;
-    //         }
-    //     }
-    //     self.recreate_resources = false;
-    // }
-
     pub fn render(
         &mut self,
         destination: &Arc<ChaosTexture>,
@@ -451,17 +466,45 @@ impl Graph {
         // important to create resources before jobs
         if self.recreate_resources {
             for (resource_id, resource_handle) in self.resources.iter_mut() {
-                let mut new_handle =
-                    ResourceHandle::new(&resource_handle.description, &resource_handle.name);
-                new_handle.recreate_resource(
-                    self.display_size,
-                    self.render_size,
-                    render_context.clone(),
-                );
-                *resource_handle = Arc::new(new_handle);
-                self.layouts.insert(*resource_id, ImageLayout::Undefined);
+                let dependant_on_render_size = match &resource_handle.description {
+                    ResourceDescription::Texture(desc) => {
+                        desc.dimension_calculations.iter().any(|dim| {
+                            *dim == TextureSizeType::PercentageOfRenderWidth
+                                || *dim == TextureSizeType::PercentageOfRenderHeight
+                        })
+                    }
+                    _ => false,
+                };
+
+                let dependant_on_display_size = match &resource_handle.description {
+                    ResourceDescription::Texture(desc) => {
+                        desc.dimension_calculations.iter().any(|dim| {
+                            *dim == TextureSizeType::PercentageOfDisplayWidth
+                                || *dim == TextureSizeType::PercentageOfDisplayHeight
+                        })
+                    }
+                    _ => false,
+                };
+
+                let recreate_resource = resource_handle.resource.is_none()
+                    || (self.render_size_changed && dependant_on_render_size)
+                    || (self.display_size_changed && dependant_on_display_size);
+
+                if recreate_resource {
+                    let mut new_handle =
+                        ResourceHandle::new(&resource_handle.description, &resource_handle.name);
+                    new_handle.recreate_resource(
+                        self.display_size,
+                        self.render_size,
+                        render_context.clone(),
+                    );
+                    *resource_handle = Arc::new(new_handle);
+                    self.layouts.insert(*resource_id, ImageLayout::Undefined);
+                }
             }
             self.recreate_resources = false;
+            self.render_size_changed = false;
+            self.display_size_changed = false;
         }
 
         if self.sort_jobs {
@@ -492,6 +535,12 @@ impl Graph {
                         *image_layout,
                         *resource_id,
                         &mut self.layouts,
+                        &self.resources,
+                        &mut command_buffer,
+                    )?,
+                    Job::BufferBarrierJob { resource_id, usage } => Self::add_buffer_barrier(
+                        usage,
+                        *resource_id,
                         &self.resources,
                         &mut command_buffer,
                     )?,
@@ -560,6 +609,23 @@ impl Graph {
         if new_layout == old_layout {
             return Ok(());
         }
+        if new_layout == ImageLayout::Undefined {
+            return Err(GraphError::BarrierError(
+                "Can't transition to the undefined layout".to_string(),
+            ));
+        }
+        let (src_stages, _, src_writes) = layout_scope(old_layout).ok_or_else(|| {
+            GraphError::BarrierError(format!(
+                "No barrier scope for image layout {:?}",
+                old_layout
+            ))
+        })?;
+        let (dst_stages, dst_reads, dst_writes) = layout_scope(new_layout).ok_or_else(|| {
+            GraphError::BarrierError(format!(
+                "No barrier scope for image layout {:?}",
+                new_layout
+            ))
+        })?;
         match resources.get(&resource_id) {
             Some(resource_handle) => match resource_handle.resource.clone() {
                 Some(resource) => {
@@ -571,9 +637,16 @@ impl Graph {
                             ));
                         }
                     };
-                    let mut barrier = ImageMemoryBarrier::image(image.image());
+                    let image = image.image();
+                    let mut barrier = ImageMemoryBarrier::image(image.clone());
+                    barrier.src_stages = src_stages;
+                    barrier.src_access = src_writes;
+                    barrier.dst_stages = dst_stages;
+                    barrier.dst_access = dst_reads | dst_writes;
                     barrier.old_layout = old_layout;
                     barrier.new_layout = new_layout;
+                    // covers every mip level, array layer and the aspects of the image's format
+                    barrier.subresource_range = image.subresource_range();
                     unsafe {
                         command_buffer.pipeline_barrier(&DependencyInfo {
                             image_memory_barriers: vec![barrier].into(),
@@ -589,6 +662,54 @@ impl Graph {
             },
             _ => Err(GraphError::BarrierError("Resource not found".to_string())),
         }
+    }
+
+    /// Makes the writes of earlier nodes to a buffer visible to the node that consumes it.
+    /// Buffers have no layout to track, so unlike images this is emitted for every use.
+    fn add_buffer_barrier(
+        usage: &BufferUsage,
+        resource_id: ResourceId,
+        resources: &HashMap<ResourceId, Arc<ResourceHandle>>,
+        command_buffer: &mut RecordingCommandBuffer,
+    ) -> Result<(), GraphError> {
+        let resource = resources
+            .get(&resource_id)
+            .ok_or_else(|| GraphError::BarrierError("Resource not found".to_string()))?
+            .resource
+            .clone()
+            .ok_or_else(|| GraphError::BarrierError("Resource is not initialized".to_string()))?;
+        let buffer = match resource.as_ref() {
+            Resource::Buffer(buffer) => buffer,
+            _ => {
+                return Err(GraphError::BarrierError(
+                    "Resource is not a buffer".to_string(),
+                ));
+            }
+        };
+        let subbuffer = buffer
+            .buffer()
+            .ok_or_else(|| GraphError::BarrierError("Buffer has no data".to_string()))?;
+
+        let mut barrier = BufferMemoryBarrier::buffer(subbuffer.buffer().clone());
+        barrier.src_stages = PipelineStages::ALL_COMMANDS;
+        barrier.src_access = AccessFlags::MEMORY_WRITE;
+        barrier.dst_stages = PipelineStages::VERTEX_SHADER
+            | PipelineStages::FRAGMENT_SHADER
+            | PipelineStages::COMPUTE_SHADER;
+        barrier.dst_access = match usage {
+            BufferUsage::StorageRead => AccessFlags::SHADER_STORAGE_READ,
+            BufferUsage::StorageWrite => {
+                AccessFlags::SHADER_STORAGE_READ | AccessFlags::SHADER_STORAGE_WRITE
+            }
+        };
+        barrier.range = subbuffer.offset()..subbuffer.offset() + subbuffer.size();
+        unsafe {
+            command_buffer.pipeline_barrier(&DependencyInfo {
+                buffer_memory_barriers: vec![barrier].into(),
+                ..Default::default()
+            })?;
+        }
+        Ok(())
     }
 
     fn create_hierarchy(
@@ -772,7 +893,10 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rendering::graph::{node::NodeType, resource::ResourceDescription};
+    use crate::rendering::graph::{
+        node::NodeType,
+        resource::{ResourceDescription, ResourceUsage},
+    };
     use std::assert_eq;
 
     pub struct TestNode {}
@@ -793,7 +917,12 @@ mod tests {
             node = node.with_input(input, NodeInputKind::TestKind);
         }
         for output in outputs {
-            node = node.with_resource(output, ResourceDescription::TestTextureResource, true);
+            node = node.with_resource(
+                output,
+                ResourceDescription::TestTextureResource,
+                ResourceUsage::ColorAttachment,
+                true,
+            );
         }
         node
     }
@@ -1072,11 +1201,13 @@ mod tests {
                 .with_resource(
                     "exposed".to_string(),
                     ResourceDescription::TestTextureResource,
+                    ResourceUsage::ColorAttachment,
                     true,
                 )
                 .with_resource(
                     "scratch".to_string(),
                     ResourceDescription::TestTextureResource,
+                    ResourceUsage::ColorAttachment,
                     false,
                 ),
         );
@@ -1107,6 +1238,40 @@ mod tests {
                 ("scratch".to_string(), scratch)
             ]
         );
+    }
+
+    #[test]
+    fn test_sort_emits_buffer_barrier_for_buffer_inputs() {
+        let mut graph = Graph::new([800, 600]);
+        let source = graph.add_node(test_named_node(
+            "Source".to_string(),
+            vec![],
+            vec!["out".to_string()],
+        ));
+        let sink = graph.add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
+            "data".to_string(),
+            NodeInputKind::Buffer(BufferUsage::StorageRead),
+        ));
+        graph
+            .connect(source, "out".to_string(), sink, "data".to_string())
+            .unwrap();
+
+        assert!(graph.sort().is_ok());
+
+        let out = graph.resource_lookup[&(source, "out".to_string())];
+        assert!(graph.jobs.iter().flatten().any(|job| matches!(
+            job,
+            Job::BufferBarrierJob { resource_id, usage: BufferUsage::StorageRead } if *resource_id == out
+        )));
+        // the only image barrier on `out` is the producer's own attachment usage, the buffer
+        // input must not add another one
+        let image_barriers = graph
+            .jobs
+            .iter()
+            .flatten()
+            .filter(|job| matches!(job, Job::BarrierJob { resource_id, .. } if *resource_id == out))
+            .count();
+        assert_eq!(image_barriers, 1);
     }
 
     #[test]
