@@ -1,7 +1,7 @@
 pub mod adapters;
 pub mod bindless_registry;
 pub mod buffer;
-pub mod command_buffers;
+pub mod command_buffer;
 pub mod context;
 pub mod draw_command;
 pub mod effect;

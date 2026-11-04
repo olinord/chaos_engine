@@ -3,8 +3,8 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use vulkano::{
     Validated, VulkanError, VulkanLibrary,
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferExecFuture, CommandBufferUsage,
-        PrimaryAutoCommandBuffer, RenderingAttachmentInfo, RenderingInfo,
+        CommandBufferBeginInfo, CommandBufferExecFuture, CommandBufferLevel, CommandBufferUsage,
+        RecordingCommandBuffer, RenderingAttachmentInfo, RenderingInfo,
         allocator::StandardCommandBufferAllocator,
     },
     device::{Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags},
@@ -23,7 +23,7 @@ use winit::{raw_window_handle::DisplayHandle, window::Window};
 
 use crate::rendering::{
     adapters::select_physical_device, context::ChaosRenderContext, draw_command::ChaosDrawQueue,
-    swapchain::get_swapchain_and_backbuffers,
+    swapchain::get_swapchain_and_backbuffers, texture::ChaosTexture,
 };
 
 use crate::frame_zone;
@@ -143,7 +143,6 @@ impl ChaosRenderer {
             device.clone(),
             Default::default(),
         ));
-        StandardCommandBufferAllocator::new(device.clone(), Default::default());
 
         let fences: Vec<Option<Fence>> = (0..3).map(|_| None).collect();
 
@@ -171,7 +170,7 @@ impl ChaosRenderer {
         }
     }
 
-    pub fn start_frame(&mut self) -> Option<AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>> {
+    pub fn start_frame(&mut self) -> Option<RecordingCommandBuffer> {
         if let Some(extent) = self.pending_resize.take() {
             if let Err(e) = self.recreate_swapchain_now(extent) {
                 log::warn!("Failed to recreate swapchain: {e:?}");
@@ -207,17 +206,42 @@ impl ChaosRenderer {
         self.current_buffer = image_i;
         self.current_acquire_future = Some(acquire_future);
 
-        let queue = self.queue.as_ref().unwrap();
-        let mut current_builder = AutoCommandBufferBuilder::primary(
+        let backbuffers = self.render_context.backbuffers();
+        self.begin_rendering(backbuffers[image_i as usize].clone())
+    }
+
+    pub fn begin_rendering(
+        &self,
+        destination: Arc<ChaosTexture>,
+    ) -> Option<RecordingCommandBuffer> {
+        let queue = match self.queue.clone() {
+            Some(queue) => queue,
+            None => {
+                log::error!("Renderer queue is None");
+                return None;
+            }
+        };
+
+        let command_buffer = RecordingCommandBuffer::new(
             self.command_buffer_allocator.clone(),
             queue.queue_family_index(),
-            CommandBufferUsage::MultipleSubmit,
-        )
-        .unwrap();
+            CommandBufferLevel::Primary,
+            CommandBufferBeginInfo {
+                usage: CommandBufferUsage::OneTimeSubmit,
+                ..Default::default()
+            },
+        );
 
-        let backbuffers = self.render_context.backbuffers();
+        let mut command_buffer = match command_buffer {
+            Ok(buffer) => buffer,
+            Err(e) => {
+                log::error!("Failed to create a command buffer {}", e);
+                return None;
+            }
+        };
+
         let mut color_attachment =
-            RenderingAttachmentInfo::image_view(backbuffers[image_i as usize].image_view().clone());
+            RenderingAttachmentInfo::image_view(destination.image_view().clone());
         color_attachment.load_op = AttachmentLoadOp::Clear;
         color_attachment.store_op = AttachmentStoreOp::Store;
         color_attachment.clear_value = Some(ClearValue::Float([0.0, 0.0, 0.0, 1.0]));
@@ -232,36 +256,30 @@ impl ChaosRenderer {
         ];
         let rendering_info = RenderingInfo {
             render_area_extent: fb_extent,
+            // Raw command buffers don't auto-fill this; must be >= 1.
+            layer_count: 1,
             color_attachments: vec![Some(color_attachment)],
             ..Default::default()
         };
-        current_builder.begin_rendering(rendering_info).unwrap();
 
         // Push the current viewport/scissor to the command buffer so pipelines
         // built with dynamic viewport state (see `EffectFactory`) pick up the
         // current window size after a resize.
-        let dynamic_viewport = self.render_context.viewport();
-        current_builder
-            .set_viewport(0, std::iter::once(dynamic_viewport).collect())
-            .unwrap();
-        current_builder
-            .set_scissor(
-                0,
-                std::iter::once(Scissor {
-                    offset: [0, 0],
-                    extent: fb_extent,
-                })
-                .collect(),
-            )
-            .unwrap();
-        Some(current_builder)
+        let viewport = [self.render_context.viewport(); 1];
+        let scissor = [Scissor {
+            offset: [0, 0],
+            extent: fb_extent,
+        }; 1];
+
+        unsafe {
+            command_buffer.begin_rendering(&rendering_info).unwrap();
+            command_buffer.set_viewport(0, &viewport).unwrap();
+            command_buffer.set_scissor(0, &scissor).unwrap();
+        }
+        Some(command_buffer)
     }
 
-    pub fn render(
-        &self,
-        draw_queue: ChaosDrawQueue,
-        buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-    ) {
+    pub fn render(&self, draw_queue: ChaosDrawQueue, command_buffer: &mut RecordingCommandBuffer) {
         // sort the draw queue by sort key, then execute each draw function in order
         let mut draw_queue = draw_queue;
         draw_queue
@@ -272,13 +290,11 @@ impl ChaosRenderer {
         }
     }
 
-    pub fn end_frame(
-        &mut self,
-        buffer_builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-    ) {
-        let mut buffer_builder = buffer_builder;
-        buffer_builder.end_rendering().unwrap();
-        let command_buffer = buffer_builder.build().unwrap();
+    pub fn end_frame(&mut self, command_buffer: &RecordingCommandBuffer) {
+        unsafe {
+            command_buffer.end();
+        }
+
         let image_i = self.current_buffer;
         let acquire_future = self
             .current_acquire_future
