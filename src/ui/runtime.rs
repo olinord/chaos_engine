@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ui::{
     NodeId,
     ast::{UiMarkupNode, UiStyleSheetAst},
+    errors::ParseError,
     layout::LayoutBox,
     style::{ComputedStyle, Declaration, PseudoState, StyleChange, StyleRule, StyleValue},
 };
@@ -385,7 +386,7 @@ pub struct UiTemplate {
 }
 
 impl UiTemplate {
-    pub fn from_src(markup_src: &str, stylesheet_src: &str) -> Result<Self, String> {
+    pub fn from_src(markup_src: &str, stylesheet_src: &str) -> Result<Self, ParseError> {
         let root_markup = UiMarkupNode::from_src(markup_src)?;
         let stylesheet = UiStyleSheetAst::from_stylesheet(stylesheet_src)?;
         Ok(Self {

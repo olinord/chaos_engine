@@ -8,7 +8,6 @@ use vulkano::descriptor_set::{
 };
 
 use vulkano::{
-    Validated, VulkanError,
     descriptor_set::allocator::StandardDescriptorSetAllocatorCreateInfo,
     device::{Device, physical::PhysicalDevice},
     memory::allocator::{FreeListAllocator, GenericMemoryAllocator},
@@ -17,7 +16,7 @@ use vulkano::{
 };
 
 use crate::rendering::{
-    errors::ChaosRenderingError,
+    errors::{RenderError, RenderResultExt},
     sampler::{ChaosSampler, SamplerDescriptor},
     texture::ChaosTexture,
 };
@@ -90,6 +89,20 @@ impl ChaosRenderContext {
         }
     }
 
+    // A poisoned lock means another thread panicked while holding it; that panic is the
+    // real error, so these just propagate it.
+    fn swapchain_state(&self) -> std::sync::RwLockReadGuard<'_, SwapchainState> {
+        self.swapchain_state
+            .read()
+            .expect("swapchain state lock poisoned")
+    }
+
+    fn descriptor_set_cache(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<DescriptorSet>>> {
+        self.descriptor_set_cache
+            .lock()
+            .expect("descriptor set cache lock poisoned")
+    }
+
     pub fn device(&self) -> Arc<Device> {
         self.device.clone()
     }
@@ -99,7 +112,7 @@ impl ChaosRenderContext {
     }
 
     pub fn swapchain(&self) -> Arc<Swapchain> {
-        self.swapchain_state.read().unwrap().swapchain.clone()
+        self.swapchain_state().swapchain.clone()
     }
 
     pub fn memory_allocator(&self) -> Arc<GenericMemoryAllocator<FreeListAllocator>> {
@@ -107,7 +120,7 @@ impl ChaosRenderContext {
     }
 
     pub fn viewport(&self) -> Viewport {
-        self.swapchain_state.read().unwrap().viewport.clone()
+        self.swapchain_state().viewport.clone()
     }
 
     pub fn graphic_family_index(&self) -> u32 {
@@ -115,7 +128,7 @@ impl ChaosRenderContext {
     }
 
     pub fn backbuffers(&self) -> Vec<Arc<ChaosTexture>> {
-        self.swapchain_state.read().unwrap().backbuffers.clone()
+        self.swapchain_state().backbuffers.clone()
     }
 
     pub fn mip_lod_bias(&self) -> f32 {
@@ -130,30 +143,36 @@ impl ChaosRenderContext {
         self.frame_index += 1;
     }
 
-    pub fn create_sampler(&self, descriptor: SamplerDescriptor) -> Arc<ChaosSampler> {
+    pub fn create_sampler(
+        &self,
+        descriptor: SamplerDescriptor,
+    ) -> Result<Arc<ChaosSampler>, RenderError> {
         ChaosSampler::get(self, descriptor)
     }
 
     /// Recreate the swapchain and its image views with the given surface extent.
     /// The caller must ensure the GPU is not currently using the previous swapchain
     /// images (wait on all in-flight fences before calling).
-    pub fn recreate_swapchain(&self, extent: [u32; 2]) -> Result<(), Validated<VulkanError>> {
-        let mut state = self.swapchain_state.write().unwrap();
+    pub fn recreate_swapchain(&self, extent: [u32; 2]) -> Result<(), RenderError> {
+        let mut state = self
+            .swapchain_state
+            .write()
+            .expect("swapchain state lock poisoned");
         let create_info = SwapchainCreateInfo {
             image_extent: extent,
             ..state.swapchain.create_info()
         };
-        let (new_swapchain, new_backbuffers) = state.swapchain.recreate(create_info)?;
+        let (new_swapchain, new_backbuffers) = state
+            .swapchain
+            .recreate(create_info)
+            .context("recreate swapchain")?;
         let new_backbuffers = new_backbuffers
             .into_iter()
             .enumerate()
             .map(|(i, image)| {
-                Arc::new(ChaosTexture::from_existing(
-                    format!("Backbuffer {}", i),
-                    image,
-                ))
+                ChaosTexture::from_existing(format!("Backbuffer {}", i), image).map(Arc::new)
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         state.swapchain = new_swapchain;
         state.backbuffers = new_backbuffers;
         state.viewport = flipped_viewport(extent[0] as f32, extent[1] as f32);
@@ -165,8 +184,8 @@ impl ChaosRenderContext {
         key: u64,
         set_layout: &Arc<DescriptorSetLayout>,
         write_fn: impl FnOnce() -> Vec<WriteDescriptorSet>,
-    ) -> Result<Arc<DescriptorSet>, ChaosRenderingError> {
-        let mut cache = self.descriptor_set_cache.lock().unwrap();
+    ) -> Result<Arc<DescriptorSet>, RenderError> {
+        let mut cache = self.descriptor_set_cache();
 
         if let Some(set) = cache.get(&key) {
             return Ok(set.clone());
@@ -178,12 +197,12 @@ impl ChaosRenderContext {
             write_fn(),
             [],
         )
-        .map_err(|e| ChaosRenderingError::DescriptorSetCreationError(e.to_string()))?;
+        .context("create descriptor set")?;
         cache.insert(key, set.clone());
         Ok(set)
     }
 
     pub fn clear_descriptor_set_cache(&self) {
-        self.descriptor_set_cache.lock().unwrap().clear();
+        self.descriptor_set_cache().clear();
     }
 }

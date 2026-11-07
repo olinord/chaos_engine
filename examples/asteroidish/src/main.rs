@@ -7,6 +7,7 @@ use chaos_engine::device::events::ChaosKeyCode;
 use chaos_engine::engine::ChaosEngine;
 use chaos_engine::log;
 use chaos_engine::logger::ChaosLogger;
+use chaos_engine::rendering::errors::error_chain;
 use std::path::PathBuf;
 
 use crate::consts::DeviceEvent;
@@ -89,5 +90,8 @@ fn main() {
         DeviceEvent::Resized,
     );
 
-    engine.run();
+    if let Err(error) = engine.run() {
+        eprintln!("{}", error_chain(&error));
+        std::process::exit(1);
+    }
 }

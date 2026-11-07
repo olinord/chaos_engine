@@ -2,7 +2,13 @@ use std::{collections::HashMap, path::PathBuf};
 
 use fontdue::{Font, FontSettings};
 
-use crate::ui::{FontId, TextureId, default_font, runtime::UiTemplate};
+use crate::ui::{
+    FontId, TextureId,
+    ast::{UiMarkupNode, UiStyleSheetAst},
+    default_font,
+    errors::{ParseError, UiAssetError},
+    runtime::UiTemplate,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UiTemplateId(pub u32);
@@ -60,7 +66,7 @@ impl UiAssetStore {
         key: &str,
         markup: &str,
         css: &str,
-    ) -> Result<UiTemplateId, String> {
+    ) -> Result<UiTemplateId, ParseError> {
         let template = UiTemplate::from_src(markup, css)?;
         Ok(self.insert_template(key, template, None, None))
     }
@@ -72,12 +78,8 @@ impl UiAssetStore {
         key: &str,
         markup_path: PathBuf,
         css_path: PathBuf,
-    ) -> Result<UiTemplateId, String> {
-        let markup = std::fs::read_to_string(&markup_path)
-            .map_err(|e| format!("read {}: {e}", markup_path.display()))?;
-        let css = std::fs::read_to_string(&css_path)
-            .map_err(|e| format!("read {}: {e}", css_path.display()))?;
-        let template = UiTemplate::from_src(&markup, &css)?;
+    ) -> Result<UiTemplateId, UiAssetError> {
+        let template = load_template_files(&markup_path, &css_path)?;
         Ok(self.insert_template(key, template, Some(markup_path), Some(css_path)))
     }
 
@@ -136,9 +138,17 @@ impl UiAssetStore {
     /// Parse `bytes` as a TrueType/OpenType font and register it under `name`.
     /// Returns the assigned [`FontId`]. On parse failure the font is not stored
     /// and an error string is returned.
-    pub fn load_font_from_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<FontId, String> {
-        let font = Font::from_bytes(bytes, FontSettings::default())
-            .map_err(|e| format!("failed to parse font '{name}': {e}"))?;
+    pub fn load_font_from_bytes(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<FontId, UiAssetError> {
+        let font = Font::from_bytes(bytes, FontSettings::default()).map_err(|message| {
+            UiAssetError::Font {
+                name: name.to_string(),
+                message,
+            }
+        })?;
         let id = self.next_font_id;
         self.next_font_id += 1;
         self.fonts.insert(name.to_string(), id);
@@ -158,9 +168,31 @@ impl UiAssetStore {
 
     /// Register the bundled VT323 Regular font under the name `"default"`.
     /// Returns the assigned [`FontId`] (always `0` when called on a fresh store).
-    pub fn load_default_font(&mut self) -> Result<FontId, String> {
+    pub fn load_default_font(&mut self) -> Result<FontId, UiAssetError> {
         self.load_font_from_bytes("default", default_font::VT323_REGULAR)
     }
+}
+
+/// Reads and parses a markup + stylesheet pair from disk. Parse errors carry the path of
+/// the file they came from.
+pub fn load_template_files(
+    markup_path: &PathBuf,
+    css_path: &PathBuf,
+) -> Result<UiTemplate, UiAssetError> {
+    let read = |path: &PathBuf| {
+        std::fs::read_to_string(path).map_err(|source| UiAssetError::Io {
+            path: path.clone(),
+            source,
+        })
+    };
+    let markup = read(markup_path)?;
+    let css = read(css_path)?;
+    let root_markup = UiMarkupNode::from_src(&markup).map_err(|e| e.with_path(markup_path))?;
+    let stylesheet = UiStyleSheetAst::from_stylesheet(&css).map_err(|e| e.with_path(css_path))?;
+    Ok(UiTemplate {
+        root_markup,
+        stylesheet,
+    })
 }
 
 #[cfg(test)]

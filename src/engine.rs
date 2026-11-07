@@ -3,8 +3,10 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use crate::{
     device::system::DeviceEventSystem,
     ecs::world::ChaosWorld,
+    errors::EngineError,
     rendering::{
-        context::ChaosRenderContext, effect_factory::EffectFactory, renderer::ChaosRenderer,
+        context::ChaosRenderContext, effect_factory::EffectFactory, errors::error_chain,
+        renderer::ChaosRenderer,
     },
     trace_zone,
 };
@@ -27,10 +29,12 @@ pub struct ChaosEngine {
     width: u32,
     height: u32,
     directories: HashMap<PathBuf, PathBuf>,
+    // Set when a fatal error stops the event loop, so `run` can return it.
+    fatal_error: Option<EngineError>,
 }
 
 impl ChaosEngine {
-    pub fn new(title: &str, width: u32, height: u32) -> Result<ChaosEngine, &'static str> {
+    pub fn new(title: &str, width: u32, height: u32) -> Result<ChaosEngine, EngineError> {
         crate::telemetry::init();
         let device_event_system = DeviceEventSystem::new();
 
@@ -43,28 +47,40 @@ impl ChaosEngine {
             width,
             height,
             directories: HashMap::new(),
+            fatal_error: None,
         })
     }
 
-    fn initialize_rendering_system(&mut self, event_loop: &ActiveEventLoop) {
+    fn initialize_rendering_system(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<(), EngineError> {
         let size = PhysicalSize::new(self.width, self.height);
         let window_attributes = WindowAttributes::default()
             .with_title(self.title.clone())
             .with_inner_size(size);
 
-        self.window = Some(Arc::new(
-            event_loop.create_window(window_attributes).unwrap(),
-        ));
+        let window = Arc::new(event_loop.create_window(window_attributes)?);
+        self.window = Some(window.clone());
 
-        let rendering_system = ChaosRenderer::new(
-            &event_loop.display_handle().unwrap(),
-            self.window.clone().unwrap(),
-            &self.directories,
-        );
+        let rendering_system =
+            ChaosRenderer::new(&event_loop.display_handle()?, window, &self.directories)?;
         self.rendering_system = Some(rendering_system);
 
         // push the directories to the effect factory so we can use shaders
         EffectFactory::instance().load_from_directories(&self.directories, self.render_context());
+        Ok(())
+    }
+
+    /// The one place that decides what to do with an error that stops the engine:
+    /// log it with its full cause chain, remember it for `run`, and exit the event loop.
+    fn fail(&mut self, event_loop: &ActiveEventLoop, error: EngineError) {
+        log::error!("Fatal error: {}", error_chain(&error));
+        // Events can still arrive before the loop exits; keep the first error, it's the cause.
+        if self.fatal_error.is_none() {
+            self.fatal_error = Some(error);
+        }
+        event_loop.exit();
     }
 
     pub fn add_directory(&mut self, root: PathBuf, path: PathBuf) {
@@ -82,11 +98,15 @@ impl ChaosEngine {
         }
     }
 
-    pub fn run(mut self) {
-        let event_loop = EventLoop::new().expect("Couldn't create an eventloop");
-        event_loop
-            .run_app(&mut self)
-            .expect("Failed to run event loop");
+    /// Runs the engine until the window closes. Returns the fatal error that stopped it,
+    /// if any.
+    pub fn run(mut self) -> Result<(), EngineError> {
+        let event_loop = EventLoop::new()?;
+        event_loop.run_app(&mut self)?;
+        match self.fatal_error.take() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     pub fn world_mut(&mut self) -> &mut ChaosWorld {
@@ -102,27 +122,27 @@ impl ChaosEngine {
         }
     }
 
-    fn update(&mut self) -> Result<(), &'static str> {
+    fn update(&mut self) -> Result<(), EngineError> {
         trace_zone!("engine update");
-        self.world.update()
+        self.world.update().map_err(EngineError::World)
     }
 
-    fn render(&mut self) -> Result<(), &'static str> {
+    fn render(&mut self) -> Result<(), EngineError> {
         trace_zone!("engine render");
-        let rendering_system = self
-            .rendering_system
-            .as_mut()
-            .ok_or("Rendering system is not initialized")?;
+        // Window events only arrive once `resumed` has created the window and renderer.
+        let Some(rendering_system) = self.rendering_system.as_mut() else {
+            return Ok(());
+        };
 
-        let mut buffer_builder = match rendering_system.start_frame() {
-            Some(buffer_builder) => buffer_builder,
-            None => return Err("Failed to start frame"),
+        // `None` means the swapchain is being recreated; skip this frame.
+        let Some(mut buffer_builder) = rendering_system.start_frame()? else {
+            return Ok(());
         };
 
         let draw_queue = self.world.get_draw_queue(rendering_system.render_context());
 
         rendering_system.render(draw_queue, &mut buffer_builder);
-        rendering_system.end_frame(buffer_builder);
+        rendering_system.end_frame(buffer_builder)?;
         Ok(())
     }
 }
@@ -130,7 +150,10 @@ impl ChaosEngine {
 impl ApplicationHandler for ChaosEngine {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.rendering_system.is_none() {
-            self.initialize_rendering_system(event_loop);
+            if let Err(error) = self.initialize_rendering_system(event_loop) {
+                self.fail(event_loop, error);
+                return;
+            }
             self.world.initialize_systems().unwrap_or_else(|err| {
                 log::error!("Error initializing systems: {}", err);
             });
@@ -156,13 +179,18 @@ impl ApplicationHandler for ChaosEngine {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.window.as_ref().unwrap().request_redraw();
-                self.update().unwrap_or_else(|err| {
-                    log::error!("Error updating world: {}", err);
-                });
-                self.render().unwrap_or_else(|err| {
-                    log::error!("Error rendering: {}", err);
-                });
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+                // A failing game system is logged but doesn't stop the engine.
+                if let Err(error) = self.update() {
+                    log::error!("{}", error_chain(&error));
+                }
+                // The renderer handles recoverable conditions itself (an out-of-date
+                // swapchain just skips the frame), so any error that gets here is fatal.
+                if let Err(error) = self.render() {
+                    self.fail(event_loop, error);
+                }
             }
             _ => (),
         }

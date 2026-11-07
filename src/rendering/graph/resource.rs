@@ -6,7 +6,9 @@ use vulkano::{
     sync::{AccessFlags, PipelineStages},
 };
 
-use crate::rendering::{buffer::ChaosBuffer, context::ChaosRenderContext, texture::ChaosTexture};
+use crate::rendering::{
+    buffer::ChaosBuffer, context::ChaosRenderContext, errors::RenderError, texture::ChaosTexture,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextureSizeType {
@@ -149,7 +151,7 @@ impl ResourceHandle {
         display_size: [u32; 2],
         render_size: [u32; 2],
         render_context: Arc<ChaosRenderContext>,
-    ) {
+    ) -> Result<(), RenderError> {
         match &self.description {
             ResourceDescription::Texture(desc) => {
                 let mut dimensions = [0u32; 3];
@@ -183,7 +185,7 @@ impl ResourceHandle {
                     desc.format,
                     desc.usage,
                     render_context,
-                );
+                )?;
                 self.resource = Some(Arc::new(Resource::Texture(Arc::new(image))));
             }
             #[cfg(test)]
@@ -195,6 +197,7 @@ impl ResourceHandle {
                 self.resource = Some(Arc::new(Resource::TestBufferResource));
             }
         }
+        Ok(())
     }
 
     pub fn get_or_create_resource(
@@ -202,14 +205,17 @@ impl ResourceHandle {
         display_size: [u32; 2],
         render_size: [u32; 2],
         render_context: Arc<ChaosRenderContext>,
-    ) -> Arc<Resource> {
+    ) -> Result<Arc<Resource>, RenderError> {
         if let Some(resource) = &self.resource {
-            return resource.clone();
+            return Ok(resource.clone());
         }
 
-        self.recreate_resource(display_size, render_size, render_context);
+        self.recreate_resource(display_size, render_size, render_context)?;
 
-        self.resource.as_ref().unwrap().clone()
+        Ok(self
+            .resource
+            .clone()
+            .expect("recreate_resource sets the resource on success"))
     }
 }
 

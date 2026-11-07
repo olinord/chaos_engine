@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fmt;
 use std::sync::Arc;
 
 use vulkano::{
-    Validated, ValidationError, VulkanError,
-    command_buffer::RenderingInfo,
     image::ImageLayout,
     sync::{AccessFlags, BufferMemoryBarrier, DependencyInfo, ImageMemoryBarrier, PipelineStages},
 };
 
 use crate::rendering::command_buffer::{ChaosCommandBuffer, ChaosRenderExtent};
-use crate::rendering::errors::ChaosRenderingError;
+use crate::rendering::errors::RenderError;
 use crate::rendering::graph::resource::ResourceDescription;
 use crate::rendering::{
     context::ChaosRenderContext,
@@ -22,8 +22,11 @@ use crate::rendering::{
 
 pub type ResourceId = usize;
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum GraphError {
+/// A problem with how the graph is put together. These are found when connecting nodes
+/// or when the graph is compiled (`sort`), never while it executes. Compilation gathers
+/// every problem it finds, so a graph with three wiring mistakes reports all three.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphBuildError {
     SourceNodeNotFound {
         node_id: GraphNodeId,
     },
@@ -39,47 +42,151 @@ pub enum GraphError {
         node_name: String,
         resource_name: String,
     },
-    ResourceNotFound {
-        node_id: GraphNodeId,
-        resource_name: String,
-    },
     ConnectionBetweenSameNode {
         node_id: GraphNodeId,
     },
-    CircularConnection(Vec<String>),
-    BarrierError(String),
-    CommandBufferCreationFailed(String),
-    NodeExecutionFailed(String),
-    VulkanError(String),
-    Custom(String),
     ConnectionAlreadyExists {
-        destination_id: usize,
+        destination_id: GraphNodeId,
         destination_input: String,
     },
     InputNotConnected {
         node_name: String,
         input_name: String,
     },
-    NodeResourceNotFound {
-        resource_name: String,
+    /// An input expects a different kind of resource (texture/buffer) than the one
+    /// connected to it.
+    InputKindMismatch {
+        node_name: String,
+        input_name: String,
+        expected: &'static str,
+        source_node_name: String,
+        source_resource: String,
     },
-    CommandBufferEror(String),
+    /// A texture input asks for a layout the graph can't transition to.
+    InvalidInputLayout {
+        node_name: String,
+        input_name: String,
+        layout: ImageLayout,
+    },
+    CircularConnection(Vec<String>),
 }
 
-impl From<ChaosRenderingError> for GraphError {
-    fn from(value: ChaosRenderingError) -> Self {
-        GraphError::CommandBufferEror(format!("Command buffer error: {:?}", value))
+/// Errors that can happen while the graph runs.
+#[derive(Debug)]
+pub enum GraphError {
+    /// The graph failed to compile. Holds every problem that was found.
+    Invalid(Vec<GraphBuildError>),
+    /// A node asked its context for a resource or input name it doesn't have.
+    NodeResourceNotFound { resource_name: String },
+    /// A node's `execute` failed.
+    NodeFailed {
+        node_name: String,
+        source: Box<GraphError>,
+    },
+    /// Creating or using a GPU resource failed.
+    Render(RenderError),
+    /// Free-form error for node implementations.
+    Custom(String),
+}
+
+impl From<RenderError> for GraphError {
+    fn from(value: RenderError) -> Self {
+        GraphError::Render(value)
     }
 }
 
-impl From<Validated<VulkanError>> for GraphError {
-    fn from(value: Validated<VulkanError>) -> Self {
-        GraphError::VulkanError(value.to_string())
+impl fmt::Display for GraphBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GraphBuildError::SourceNodeNotFound { node_id } => {
+                write!(f, "source node {node_id} doesn't exist")
+            }
+            GraphBuildError::DestinationNodeNotFound { node_id } => {
+                write!(f, "destination node {node_id} doesn't exist")
+            }
+            GraphBuildError::DestinationInputNotFound {
+                node_id,
+                input_name,
+            } => write!(f, "node {node_id} has no input '{input_name}'"),
+            GraphBuildError::SourceResourceNotFound {
+                node_name,
+                resource_name,
+                ..
+            } => write!(f, "node '{node_name}' has no output '{resource_name}'"),
+            GraphBuildError::ConnectionBetweenSameNode { node_id } => {
+                write!(f, "node {node_id} can't be connected to itself")
+            }
+            GraphBuildError::ConnectionAlreadyExists {
+                destination_id,
+                destination_input,
+            } => write!(
+                f,
+                "input '{destination_input}' on node {destination_id} is already connected"
+            ),
+            GraphBuildError::InputNotConnected {
+                node_name,
+                input_name,
+            } => write!(
+                f,
+                "input '{input_name}' on node '{node_name}' is not connected"
+            ),
+            GraphBuildError::InputKindMismatch {
+                node_name,
+                input_name,
+                expected,
+                source_node_name,
+                source_resource,
+            } => write!(
+                f,
+                "input '{input_name}' on node '{node_name}' expects a {expected}, but \
+                 '{source_resource}' on node '{source_node_name}' isn't one"
+            ),
+            GraphBuildError::InvalidInputLayout {
+                node_name,
+                input_name,
+                layout,
+            } => write!(
+                f,
+                "input '{input_name}' on node '{node_name}' asks for unsupported layout {layout:?}"
+            ),
+            GraphBuildError::CircularConnection(nodes) => {
+                write!(f, "circular connection between nodes: {}", nodes.join(", "))
+            }
+        }
     }
 }
-impl From<Box<ValidationError>> for GraphError {
-    fn from(value: Box<ValidationError>) -> Self {
-        GraphError::VulkanError(value.to_string())
+
+impl Error for GraphBuildError {}
+
+impl fmt::Display for GraphError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GraphError::Invalid(problems) => {
+                write!(f, "render graph is invalid:")?;
+                for problem in problems {
+                    write!(f, "\n  - {problem}")?;
+                }
+                Ok(())
+            }
+            GraphError::NodeResourceNotFound { resource_name } => {
+                write!(f, "node has no resource or input named '{resource_name}'")
+            }
+            GraphError::NodeFailed { node_name, .. } => write!(f, "node '{node_name}' failed"),
+            GraphError::Render(_) => write!(f, "rendering error in graph"),
+            GraphError::Custom(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl Error for GraphError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            GraphError::NodeFailed { source, .. } => Some(source.as_ref()),
+            GraphError::Render(error) => Some(error),
+            GraphError::Invalid(_)
+            | GraphError::NodeResourceNotFound { .. }
+            | GraphError::Custom(_) => None,
+        }
     }
 }
 
@@ -195,35 +302,33 @@ impl Graph {
         command_buffer: &'a mut ChaosCommandBuffer,
         inputs: &[(String, ResourceId)],
         resources: &[(String, ResourceId)],
-    ) -> Result<GraphContext<'a>, GraphError> {
-        Ok(GraphContext {
+    ) -> GraphContext<'a> {
+        GraphContext {
             render_size: self.render_size,
             display_size: self.display_size,
-            inputs: self.node_resources(node_id, inputs)?,
-            node_resources: self.node_resources(node_id, resources)?,
+            inputs: self.node_resources(node_id, inputs),
+            node_resources: self.node_resources(node_id, resources),
             command_buffer,
-        })
+        }
     }
 
     /// Swaps the resource ids resolved by `sort` for the current resource handles.
+    /// The ids come from `sort`, which only hands out ids that exist.
     fn node_resources(
         &self,
         node_id: GraphNodeId,
         bindings: &[(String, ResourceId)],
-    ) -> Result<NodeResources, GraphError> {
+    ) -> NodeResources {
         let entries = bindings
             .iter()
             .map(|(name, resource_id)| {
-                self.resources
-                    .get(resource_id)
-                    .map(|handle| (name.clone(), handle.clone()))
-                    .ok_or_else(|| GraphError::ResourceNotFound {
-                        node_id,
-                        resource_name: name.clone(),
-                    })
+                let handle = self.resources.get(resource_id).unwrap_or_else(|| {
+                    panic!("sort resolved '{name}' on node {node_id} to a missing resource")
+                });
+                (name.clone(), handle.clone())
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(NodeResources::new(entries))
+            .collect();
+        NodeResources::new(entries)
     }
 
     pub fn initialize(&mut self, render_context: Arc<ChaosRenderContext>) {
@@ -277,9 +382,9 @@ impl Graph {
         source_resource: String,
         destination: GraphNodeId,
         destination_input: String,
-    ) -> Result<(), GraphError> {
+    ) -> Result<(), GraphBuildError> {
         if source == destination {
-            return Err(GraphError::ConnectionBetweenSameNode { node_id: source });
+            return Err(GraphBuildError::ConnectionBetweenSameNode { node_id: source });
         }
 
         // check if there is already a connection to the destination and input
@@ -287,7 +392,7 @@ impl Graph {
             connection.destination_id == destination
                 && connection.destination_input == destination_input
         }) {
-            return Err(GraphError::ConnectionAlreadyExists {
+            return Err(GraphBuildError::ConnectionAlreadyExists {
                 destination_id: destination,
                 destination_input: destination_input.clone(),
             });
@@ -298,7 +403,7 @@ impl Graph {
             Some(source_node) => {
                 // source node needs to contain the specified resource
                 if !source_node.outputs.contains(&source_resource) {
-                    return Err(GraphError::SourceResourceNotFound {
+                    return Err(GraphBuildError::SourceResourceNotFound {
                         node_id: source,
                         node_name: source_node.name.clone(),
                         resource_name: source_resource,
@@ -313,7 +418,7 @@ impl Graph {
                             .input_descriptions
                             .contains_key(&destination_input)
                         {
-                            return Err(GraphError::DestinationInputNotFound {
+                            return Err(GraphBuildError::DestinationInputNotFound {
                                 node_id: destination,
                                 input_name: destination_input,
                             });
@@ -330,60 +435,121 @@ impl Graph {
                         return Ok(());
                     }
                     None => {
-                        return Err(GraphError::DestinationNodeNotFound {
+                        return Err(GraphBuildError::DestinationNodeNotFound {
                             node_id: destination,
                         });
                     }
                 }
             }
             None => {
-                return Err(GraphError::SourceNodeNotFound { node_id: source });
+                return Err(GraphBuildError::SourceNodeNotFound { node_id: source });
             }
         }
     }
 
-    fn validate(&self) -> Result<(), GraphError> {
-        for (&node_id, node) in &self.nodes {
-            for (input_name, _) in &node.input_descriptions {
-                if !self
+    /// Checks everything that can be checked without running the graph and returns every
+    /// problem found. Cycles are detected separately in `sort`, since they fall out of the
+    /// level computation.
+    fn validate(&self) -> Vec<GraphBuildError> {
+        let mut problems = Vec::new();
+
+        let mut node_ids: Vec<&GraphNodeId> = self.nodes.keys().collect();
+        node_ids.sort_unstable();
+        for &node_id in node_ids {
+            let node = &self.nodes[&node_id];
+            let mut input_names: Vec<&String> = node.input_descriptions.keys().collect();
+            input_names.sort_unstable();
+            for input_name in input_names {
+                let kind = &node.input_descriptions[input_name];
+
+                if let NodeInputKind::Texture(layout) = kind {
+                    if *layout == ImageLayout::Undefined || layout_scope(*layout).is_none() {
+                        problems.push(GraphBuildError::InvalidInputLayout {
+                            node_name: node.name.clone(),
+                            input_name: input_name.clone(),
+                            layout: *layout,
+                        });
+                    }
+                }
+
+                let Some(connection) = self
                     .connections
                     .iter()
-                    .any(|c| c.destination_id == node_id && c.destination_input == *input_name)
-                {
-                    return Err(GraphError::InputNotConnected {
+                    .find(|c| c.destination_id == node_id && c.destination_input == *input_name)
+                else {
+                    problems.push(GraphBuildError::InputNotConnected {
                         node_name: node.name.clone(),
                         input_name: input_name.clone(),
+                    });
+                    continue;
+                };
+
+                let source_node = &self.nodes[&connection.source_id];
+                let Some(description) = source_node
+                    .resource_descriptions
+                    .get(&connection.source_resource)
+                else {
+                    problems.push(GraphBuildError::SourceResourceNotFound {
+                        node_id: connection.source_id,
+                        node_name: source_node.name.clone(),
+                        resource_name: connection.source_resource.clone(),
+                    });
+                    continue;
+                };
+
+                if let Some(expected) = kind_mismatch(kind, description) {
+                    problems.push(GraphBuildError::InputKindMismatch {
+                        node_name: node.name.clone(),
+                        input_name: input_name.clone(),
+                        expected,
+                        source_node_name: source_node.name.clone(),
+                        source_resource: connection.source_resource.clone(),
                     });
                 }
             }
         }
-        Ok(())
+        problems
     }
 
+    /// Compiles the graph into jobs. Fails with every problem `validate` and the cycle check
+    /// found; once it succeeds, executing the jobs can assume a valid graph.
     fn sort(&mut self) -> Result<(), GraphError> {
-        self.validate()?;
+        let mut problems = self.validate();
 
-        self.jobs.clear();
-
-        let inputs = self.resolve_inputs()?;
         let (parents, children) = self.create_hierarchy();
-
         let levels = self.compute_levels(parents, children);
 
-        let mut order: Vec<GraphNodeId> = Vec::new();
+        let scheduled: HashSet<GraphNodeId> = levels.iter().flatten().copied().collect();
+        if scheduled.len() != self.nodes.len() {
+            let mut erroneous_nodes: Vec<(GraphNodeId, String)> = self
+                .nodes
+                .iter()
+                .filter(|(node_id, _)| !scheduled.contains(node_id))
+                .map(|(&node_id, node)| (node_id, node.name.clone()))
+                .collect();
+            erroneous_nodes.sort();
+            problems.push(GraphBuildError::CircularConnection(
+                erroneous_nodes.into_iter().map(|(_, name)| name).collect(),
+            ));
+        }
+
+        if !problems.is_empty() {
+            return Err(GraphError::Invalid(problems));
+        }
+
+        self.jobs.clear();
+        let inputs = self.resolve_inputs();
 
         for level in levels {
             let mut level_jobs: Vec<Job> = vec![];
             for node_id in level {
-                let node = self.nodes.get(&node_id).unwrap();
-                order.push(node_id);
+                let node = &self.nodes[&node_id];
                 let mut node_inputs: Vec<(String, ResourceId)> = Vec::new();
                 // add all barriers for the current node
                 for (input_name, kind) in node.input_descriptions.iter() {
-                    let resource_id = inputs
+                    let resource_id = *inputs
                         .get(&(node_id, input_name.clone()))
-                        .expect("validation should have ensured this input is connected")
-                        .clone();
+                        .expect("validation ensured this input is connected");
 
                     // add a barrier
                     match kind {
@@ -402,11 +568,10 @@ impl Graph {
                 }
 
                 for (name, usage) in node.resource_usages.iter() {
-                    let resource_id = self
+                    let resource_id = *self
                         .resource_lookup
                         .get(&(node_id, name.clone()))
-                        .expect("validation should have ensured this resource exists")
-                        .clone();
+                        .expect("add_node registers every resource the node declares");
 
                     // add a barrier
                     level_jobs.push(Job::BarrierJob {
@@ -416,17 +581,17 @@ impl Graph {
                 }
 
                 // every resource the node owns, so it can write to them
-                let mut node_outputs: Vec<(String, ResourceId)> = Vec::new();
-                for name in node.resource_descriptions.keys() {
-                    let resource_id = self
-                        .resource_lookup
-                        .get(&(node_id, name.clone()))
-                        .ok_or_else(|| GraphError::ResourceNotFound {
-                            node_id,
-                            resource_name: name.clone(),
-                        })?;
-                    node_outputs.push((name.clone(), *resource_id));
-                }
+                let mut node_outputs: Vec<(String, ResourceId)> = node
+                    .resource_descriptions
+                    .keys()
+                    .map(|name| {
+                        let resource_id = *self
+                            .resource_lookup
+                            .get(&(node_id, name.clone()))
+                            .expect("add_node registers every resource the node declares");
+                        (name.clone(), resource_id)
+                    })
+                    .collect();
 
                 // the maps iterate in arbitrary order, keep the jobs stable
                 node_inputs.sort();
@@ -442,15 +607,6 @@ impl Graph {
             self.jobs.push(level_jobs);
         }
 
-        if order.len() != self.nodes.len() {
-            let mut erroneous_nodes = vec![];
-            for (&node_id, node) in &self.nodes {
-                if !order.contains(&node_id) {
-                    erroneous_nodes.push(node.name.clone());
-                }
-            }
-            return Err(GraphError::CircularConnection(erroneous_nodes));
-        }
         self.sort_jobs = false;
         Ok(())
     }
@@ -495,7 +651,7 @@ impl Graph {
                         self.display_size,
                         self.render_size,
                         render_context.clone(),
-                    );
+                    )?;
                     *resource_handle = Arc::new(new_handle);
                     self.layouts.insert(*resource_id, ImageLayout::Undefined);
                 }
@@ -521,7 +677,7 @@ impl Graph {
                         &mut self.layouts,
                         &self.resources,
                         command_buffer,
-                    )?,
+                    ),
                     Job::BufferBarrierJob { resource_id, usage } => Self::add_buffer_barrier(
                         usage,
                         *resource_id,
@@ -570,86 +726,75 @@ impl Graph {
                 size: [800, 600],
                 offset: None,
             }),
-        )?;
+        );
 
         // the context holds the command buffer borrow, so it is created after begin_rendering
         // and consumed by execute before end_rendering
-        let graph_context = self.graph_context(*graph_node_id, command_buffer, inputs, outputs)?;
-        node.node_type.execute(graph_context)?;
+        let graph_context = self.graph_context(*graph_node_id, command_buffer, inputs, outputs);
+        node.node_type
+            .execute(graph_context)
+            .map_err(|error| GraphError::NodeFailed {
+                node_name: node.name.clone(),
+                source: Box::new(error),
+            })?;
 
-        command_buffer.end_rendering()?;
+        command_buffer.end_rendering();
         Ok(())
     }
 
+    /// Transitions an image to `new_layout`. `sort` validated the layouts and resource kinds
+    /// and `render` created every resource before running jobs, so a failure here is a bug.
     fn add_resource_barrier(
         new_layout: ImageLayout,
         resource_id: ResourceId,
         layouts: &mut HashMap<ResourceId, ImageLayout>,
         resources: &HashMap<ResourceId, Arc<ResourceHandle>>,
         command_buffer: &mut ChaosCommandBuffer,
-    ) -> Result<(), GraphError> {
-        let old_layout = match layouts.get(&resource_id) {
-            Some(layout) => layout.clone(),
-            None => ImageLayout::Undefined,
-        };
+    ) {
+        let old_layout = layouts
+            .get(&resource_id)
+            .copied()
+            .unwrap_or(ImageLayout::Undefined);
         if new_layout == old_layout {
-            return Ok(());
+            return;
         }
-        if new_layout == ImageLayout::Undefined {
-            return Err(GraphError::BarrierError(
-                "Can't transition to the undefined layout".to_string(),
-            ));
-        }
-        let (src_stages, _, src_writes) = layout_scope(old_layout).ok_or_else(|| {
-            GraphError::BarrierError(format!(
-                "No barrier scope for image layout {:?}",
-                old_layout
-            ))
-        })?;
-        let (dst_stages, dst_reads, dst_writes) = layout_scope(new_layout).ok_or_else(|| {
-            GraphError::BarrierError(format!(
-                "No barrier scope for image layout {:?}",
-                new_layout
-            ))
-        })?;
-        match resources.get(&resource_id) {
-            Some(resource_handle) => match resource_handle.resource.clone() {
-                Some(resource) => {
-                    let image = match resource.as_ref() {
-                        Resource::Texture(image) => image,
-                        _ => {
-                            return Err(GraphError::BarrierError(
-                                "Resource is not a texture".to_string(),
-                            ));
-                        }
-                    };
-                    let image = image.image();
-                    let mut barrier = ImageMemoryBarrier::image(image.clone());
-                    barrier.src_stages = src_stages;
-                    barrier.src_access = src_writes;
-                    barrier.dst_stages = dst_stages;
-                    barrier.dst_access = dst_reads | dst_writes;
-                    barrier.old_layout = old_layout;
-                    barrier.new_layout = new_layout;
-                    // covers every mip level, array layer and the aspects of the image's format
-                    barrier.subresource_range = image.subresource_range();
+        assert_ne!(
+            new_layout,
+            ImageLayout::Undefined,
+            "can't transition to the undefined layout"
+        );
+        let (src_stages, _, src_writes) = layout_scope(old_layout)
+            .unwrap_or_else(|| panic!("no barrier scope for image layout {old_layout:?}"));
+        let (dst_stages, dst_reads, dst_writes) = layout_scope(new_layout)
+            .unwrap_or_else(|| panic!("no barrier scope for image layout {new_layout:?}"));
 
-                    // keep the image alive until the command buffer is submitted, otherwise it might get dropped before the barrier is executed
-                    command_buffer.keep(image.clone());
+        let resource = resources
+            .get(&resource_id)
+            .and_then(|handle| handle.resource.clone())
+            .expect("render creates every resource before running jobs");
+        let image = match resource.as_ref() {
+            Resource::Texture(image) => image.image(),
+            other => panic!("image barrier on a resource that isn't a texture: {other:?}"),
+        };
 
-                    command_buffer.pipeline_barrier(&DependencyInfo {
-                        image_memory_barriers: vec![barrier].into(),
-                        ..Default::default()
-                    })?;
-                    layouts.insert(resource_id, new_layout);
-                    Ok(())
-                }
-                None => Err(GraphError::BarrierError(
-                    "Resource is not initialized".to_string(),
-                )),
-            },
-            _ => Err(GraphError::BarrierError("Resource not found".to_string())),
-        }
+        let mut barrier = ImageMemoryBarrier::image(image.clone());
+        barrier.src_stages = src_stages;
+        barrier.src_access = src_writes;
+        barrier.dst_stages = dst_stages;
+        barrier.dst_access = dst_reads | dst_writes;
+        barrier.old_layout = old_layout;
+        barrier.new_layout = new_layout;
+        // covers every mip level, array layer and the aspects of the image's format
+        barrier.subresource_range = image.subresource_range();
+
+        // keep the image alive until the command buffer is submitted, otherwise it might get dropped before the barrier is executed
+        command_buffer.keep(image.clone());
+
+        command_buffer.pipeline_barrier(&DependencyInfo {
+            image_memory_barriers: vec![barrier].into(),
+            ..Default::default()
+        });
+        layouts.insert(resource_id, new_layout);
     }
 
     /// Makes the writes of earlier nodes to a buffer visible to the node that consumes it.
@@ -662,21 +807,18 @@ impl Graph {
     ) -> Result<(), GraphError> {
         let resource = resources
             .get(&resource_id)
-            .ok_or_else(|| GraphError::BarrierError("Resource not found".to_string()))?
-            .resource
-            .clone()
-            .ok_or_else(|| GraphError::BarrierError("Resource is not initialized".to_string()))?;
+            .and_then(|handle| handle.resource.clone())
+            .expect("render creates every resource before running jobs");
         let buffer = match resource.as_ref() {
             Resource::Buffer(buffer) => buffer,
-            _ => {
-                return Err(GraphError::BarrierError(
-                    "Resource is not a buffer".to_string(),
-                ));
-            }
+            other => panic!("buffer barrier on a resource that isn't a buffer: {other:?}"),
         };
+        // unlike the checks above this isn't a bug: the buffer's owner may not have uploaded data yet
         let subbuffer = buffer
             .buffer()
-            .ok_or_else(|| GraphError::BarrierError("Buffer has no data".to_string()))?;
+            .ok_or_else(|| RenderError::BufferNotUploaded {
+                name: buffer.name.clone(),
+            })?;
 
         let mut barrier = BufferMemoryBarrier::buffer(subbuffer.buffer().clone());
         barrier.src_stages = PipelineStages::ALL_COMMANDS;
@@ -697,7 +839,7 @@ impl Graph {
         command_buffer.pipeline_barrier(&DependencyInfo {
             buffer_memory_barriers: vec![barrier].into(),
             ..Default::default()
-        })?;
+        });
 
         Ok(())
     }
@@ -766,25 +908,25 @@ impl Graph {
         levels
     }
 
-    fn resolve_inputs(&self) -> Result<HashMap<(GraphNodeId, String), ResourceId>, GraphError> {
-        let mut resolved_inputs = HashMap::new();
-        for connection in &self.connections {
-            let resource_id = self
-                .resource_lookup
-                .get(&(connection.source_id, connection.source_resource.clone()))
-                .ok_or(GraphError::ResourceNotFound {
-                    node_id: connection.source_id,
-                    resource_name: connection.source_resource.clone(),
-                })?;
-            resolved_inputs.insert(
+    /// Maps every connected input to the resource that feeds it. Only called after
+    /// `validate`, which checked that every connection's source resource exists.
+    fn resolve_inputs(&self) -> HashMap<(GraphNodeId, String), ResourceId> {
+        self.connections
+            .iter()
+            .map(|connection| {
+                let resource_id = *self
+                    .resource_lookup
+                    .get(&(connection.source_id, connection.source_resource.clone()))
+                    .expect("validation ensured the source resource exists");
                 (
-                    connection.destination_id,
-                    connection.destination_input.clone(),
-                ),
-                *resource_id,
-            );
-        }
-        Ok(resolved_inputs)
+                    (
+                        connection.destination_id,
+                        connection.destination_input.clone(),
+                    ),
+                    resource_id,
+                )
+            })
+            .collect()
     }
 
     /// Builds a Mermaid flowchart representation of the graph: one box per node and one
@@ -827,10 +969,7 @@ impl Graph {
         }
 
         for connection in &self.connections {
-            let resource_name = self
-                .nodes
-                .get(&connection.source_id)
-                .unwrap()
+            let resource_name = self.nodes[&connection.source_id]
                 .outputs
                 .contains(&connection.source_resource)
                 .then(|| connection.source_resource.clone())
@@ -877,6 +1016,21 @@ impl Graph {
             ));
         }
         mermaid.push_str("    end\n");
+    }
+}
+
+/// Returns what an input expected if `description` can't satisfy it.
+fn kind_mismatch(kind: &NodeInputKind, description: &ResourceDescription) -> Option<&'static str> {
+    match (kind, description) {
+        #[cfg(test)]
+        (NodeInputKind::TestKind, _) => None,
+        #[cfg(test)]
+        (_, ResourceDescription::TestTextureResource | ResourceDescription::TestBufferResource) => {
+            None
+        }
+        (NodeInputKind::Texture(_), ResourceDescription::Texture(_)) => None,
+        // there is no buffer resource description yet, so nothing can feed a buffer input
+        (NodeInputKind::Buffer(_), _) => Some("buffer"),
     }
 }
 
@@ -1273,12 +1427,10 @@ mod tests {
         let resources = NodeResources::new(vec![("color".to_string(), handle.clone())]);
 
         assert!(Arc::ptr_eq(resources.get("color").unwrap(), &handle));
-        assert_eq!(
+        assert!(matches!(
             resources.get("hdr").unwrap_err(),
-            GraphError::NodeResourceNotFound {
-                resource_name: "hdr".to_string()
-            }
-        );
+            GraphError::NodeResourceNotFound { resource_name } if resource_name == "hdr"
+        ));
     }
 
     #[test]
@@ -1321,14 +1473,143 @@ mod tests {
             "Expected sort to fail due to circular connection"
         );
         match result {
-            Err(GraphError::CircularConnection(nodes)) => {
-                // check if the nodes involved in the circular connection are as expected
-                assert!(nodes.contains(&"Node A".to_string()));
-                assert!(nodes.contains(&"Node B".to_string()));
-                assert!(nodes.contains(&"Node C".to_string()))
-            }
+            Err(GraphError::Invalid(problems)) => match problems.as_slice() {
+                [GraphBuildError::CircularConnection(nodes)] => {
+                    // check if the nodes involved in the circular connection are as expected
+                    assert!(nodes.contains(&"Node A".to_string()));
+                    assert!(nodes.contains(&"Node B".to_string()));
+                    assert!(nodes.contains(&"Node C".to_string()))
+                }
+                other => panic!("Expected only a circular connection error, got {other:?}"),
+            },
             _ => panic!("Expected circular connection error"),
         }
+    }
+
+    #[test]
+    fn test_sort_reports_every_problem_at_once() {
+        let mut graph = Graph::new([800, 600]);
+        // two unconnected inputs on one node, plus a cycle elsewhere
+        graph.add_node(test_named_node(
+            "Lonely".to_string(),
+            vec!["a".to_string(), "b".to_string()],
+            vec![],
+        ));
+        let x = graph.add_node(test_named_node(
+            "X".to_string(),
+            vec!["in".to_string()],
+            vec!["out".to_string()],
+        ));
+        let y = graph.add_node(test_named_node(
+            "Y".to_string(),
+            vec!["in".to_string()],
+            vec!["out".to_string()],
+        ));
+        graph
+            .connect(x, "out".to_string(), y, "in".to_string())
+            .unwrap();
+        graph
+            .connect(y, "out".to_string(), x, "in".to_string())
+            .unwrap();
+
+        let Err(GraphError::Invalid(problems)) = graph.sort() else {
+            panic!("expected sort to fail");
+        };
+        assert_eq!(
+            problems,
+            vec![
+                GraphBuildError::InputNotConnected {
+                    node_name: "Lonely".to_string(),
+                    input_name: "a".to_string(),
+                },
+                GraphBuildError::InputNotConnected {
+                    node_name: "Lonely".to_string(),
+                    input_name: "b".to_string(),
+                },
+                GraphBuildError::CircularConnection(vec!["X".to_string(), "Y".to_string()]),
+            ]
+        );
+    }
+
+    fn texture_description() -> ResourceDescription {
+        ResourceDescription::Texture(crate::rendering::graph::resource::TextureDescription {
+            format: vulkano::format::Format::R8G8B8A8_UNORM,
+            dimensions: [100, 100, 1],
+            mip_levels: 1,
+            array_size: 1,
+            dimension_calculations: [
+                TextureSizeType::PercentageOfRenderWidth,
+                TextureSizeType::PercentageOfRenderHeight,
+                TextureSizeType::Fixed,
+            ],
+            usage: vulkano::image::ImageUsage::COLOR_ATTACHMENT,
+        })
+    }
+
+    #[test]
+    fn test_sort_rejects_texture_connected_to_buffer_input() {
+        let mut graph = Graph::new([800, 600]);
+        let source = graph.add_node(
+            GraphNode::new("Source".to_string(), TestNode {}).with_resource(
+                "color".to_string(),
+                texture_description(),
+                ResourceUsage::ColorAttachment,
+                true,
+            ),
+        );
+        let sink = graph.add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
+            "data".to_string(),
+            NodeInputKind::Buffer(BufferUsage::StorageRead),
+        ));
+        graph
+            .connect(source, "color".to_string(), sink, "data".to_string())
+            .unwrap();
+
+        let Err(GraphError::Invalid(problems)) = graph.sort() else {
+            panic!("expected sort to fail");
+        };
+        assert_eq!(
+            problems,
+            vec![GraphBuildError::InputKindMismatch {
+                node_name: "Sink".to_string(),
+                input_name: "data".to_string(),
+                expected: "buffer",
+                source_node_name: "Source".to_string(),
+                source_resource: "color".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_sort_rejects_unsupported_input_layout() {
+        let mut graph = Graph::new([800, 600]);
+        let source = graph.add_node(
+            GraphNode::new("Source".to_string(), TestNode {}).with_resource(
+                "color".to_string(),
+                texture_description(),
+                ResourceUsage::ColorAttachment,
+                true,
+            ),
+        );
+        let sink = graph.add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
+            "color".to_string(),
+            NodeInputKind::Texture(ImageLayout::Undefined),
+        ));
+        graph
+            .connect(source, "color".to_string(), sink, "color".to_string())
+            .unwrap();
+
+        let Err(GraphError::Invalid(problems)) = graph.sort() else {
+            panic!("expected sort to fail");
+        };
+        assert_eq!(
+            problems,
+            vec![GraphBuildError::InvalidInputLayout {
+                node_name: "Sink".to_string(),
+                input_name: "color".to_string(),
+                layout: ImageLayout::Undefined,
+            }]
+        );
     }
 
     #[test]

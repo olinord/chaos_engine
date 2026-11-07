@@ -10,7 +10,7 @@ use vulkano::{buffer::BufferContents, pipeline::GraphicsPipeline};
 use crate::rendering::buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage};
 use crate::rendering::command_buffer::ChaosCommandBuffer;
 use crate::rendering::context::ChaosRenderContext;
-use crate::rendering::errors::ChaosRenderingError;
+use crate::rendering::errors::RenderError;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone, PartialOrd)]
 struct DescriptorBinding {
@@ -63,7 +63,7 @@ impl ChaosEffect {
         set_index: u32,
         binding_index: u32,
         data: T,
-    ) -> Result<(), String> {
+    ) -> Result<(), RenderError> {
         let binding = DescriptorBinding {
             set_index,
             binding_index,
@@ -84,7 +84,9 @@ impl ChaosEffect {
                 self.uniform_buffers.insert(binding.clone(), new_buffer);
 
                 self.hash = self.sort_key();
-                self.uniform_buffers.get_mut(&binding).unwrap()
+                self.uniform_buffers
+                    .get_mut(&binding)
+                    .expect("uniform buffer was inserted above")
             }
         };
         buffer.set_data(data)?;
@@ -96,7 +98,7 @@ impl ChaosEffect {
         set_index: u32,
         binding_index: u32,
         data: Vec<T>,
-    ) -> Result<(), String> {
+    ) -> Result<(), RenderError> {
         let binding = DescriptorBinding {
             set_index,
             binding_index,
@@ -117,7 +119,9 @@ impl ChaosEffect {
                 self.uniform_buffers.insert(binding.clone(), new_buffer);
 
                 self.hash = self.sort_key();
-                self.uniform_buffers.get_mut(&binding).unwrap()
+                self.uniform_buffers
+                    .get_mut(&binding)
+                    .expect("uniform buffer was inserted above")
             }
         };
         buffer.set_data_from_vec(data)?;
@@ -129,7 +133,7 @@ impl ChaosEffect {
         set_index: u32,
         binding_index: u32,
         data: T,
-    ) -> Result<(), String> {
+    ) -> Result<(), RenderError> {
         let binding = DescriptorBinding {
             set_index,
             binding_index,
@@ -150,7 +154,9 @@ impl ChaosEffect {
                 self.storage_buffers.insert(binding.clone(), new_buffer);
 
                 self.hash = self.sort_key();
-                self.storage_buffers.get_mut(&binding).unwrap()
+                self.storage_buffers
+                    .get_mut(&binding)
+                    .expect("storage buffer was inserted above")
             }
         };
         buffer.set_data(data)?;
@@ -162,7 +168,7 @@ impl ChaosEffect {
         set_index: u32,
         binding_index: u32,
         data: Vec<T>,
-    ) -> Result<(), String> {
+    ) -> Result<(), RenderError> {
         let buffer = match self.storage_buffers.get_mut(&DescriptorBinding {
             set_index,
             binding_index,
@@ -193,7 +199,7 @@ impl ChaosEffect {
                         set_index,
                         binding_index,
                     })
-                    .unwrap()
+                    .expect("storage buffer was inserted above")
             }
         };
         buffer.set_data_from_vec(data)?;
@@ -205,9 +211,8 @@ impl ChaosEffect {
         command_buffer: &mut ChaosCommandBuffer,
         offset: u32,
         data: T,
-    ) -> Result<(), ChaosRenderingError> {
-        command_buffer.push_constants(self.pipeline.layout().clone(), offset, data)?;
-        Ok(())
+    ) {
+        command_buffer.push_constants(self.pipeline.layout().clone(), offset, data);
     }
 
     fn get_descriptor_writes(&self, set_index: u32) -> Vec<WriteDescriptorSet> {
@@ -272,7 +277,7 @@ impl ChaosEffect {
     pub fn bind_descriptor_sets(
         &self,
         command_buffer: &mut ChaosCommandBuffer,
-    ) -> Result<(), ChaosRenderingError> {
+    ) -> Result<(), RenderError> {
         let layout = self.pipeline.layout().clone();
 
         for (set_index, set_layout) in layout.set_layouts().iter().enumerate() {
@@ -281,14 +286,13 @@ impl ChaosEffect {
                 .storage_buffers
                 .iter()
                 .chain(self.uniform_buffers.iter())
-                .filter(|(binding, buffer)| {
-                    (binding.set_index == set_index) && buffer.buffer().is_some()
-                })
-                .map(|(binding, buffer)| {
-                    WriteDescriptorSet::buffer(
+                .filter(|(binding, _)| binding.set_index == set_index)
+                .filter_map(|(binding, buffer)| {
+                    let buffer = buffer.buffer()?;
+                    Some(WriteDescriptorSet::buffer(
                         binding.binding_index,
-                        buffer.buffer().unwrap().as_ref().clone(),
-                    )
+                        buffer.as_ref().clone(),
+                    ))
                 })
                 .collect::<Vec<_>>();
 
@@ -308,7 +312,7 @@ impl ChaosEffect {
                 layout.as_ref(),
                 set_index,
                 &sets,
-            )?;
+            );
         }
 
         Ok(())

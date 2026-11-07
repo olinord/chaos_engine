@@ -10,6 +10,7 @@ use chaos_engine::ecs::world::ChaosWorld;
 use chaos_engine::engine::ChaosEngine;
 use chaos_engine::log;
 use chaos_engine::logger::ChaosLogger;
+use chaos_engine::rendering::errors::error_chain;
 use chaos_engine::triggers::trigger_event_key::TriggerEventKey;
 use chaos_engine::ui::layout::UiViewport;
 use chaos_engine::ui::runtime::UiTemplate;
@@ -126,7 +127,10 @@ fn main() {
     engine.world_mut().add_render_system(ui_system);
     engine.world_mut().add_system(FrameTimeCounterSystem);
 
-    engine.run();
+    if let Err(error) = engine.run() {
+        eprintln!("{}", error_chain(&error));
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]

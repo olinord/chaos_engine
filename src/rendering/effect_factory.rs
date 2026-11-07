@@ -148,7 +148,9 @@ impl ShaderEntry {
         }
     }
 
-    fn initialize(&mut self, device: &Arc<Device>) {
+    /// Builds the pipeline layout from the shaders' reflected descriptor sets. Fails if the
+    /// stages disagree with each other or the device can't create the layout.
+    fn initialize(&mut self, device: &Arc<Device>) -> Result<(), String> {
         for shader_module in self.shaders.values() {
             let entry_point = shader_module.entry_point.clone();
             self.stages
@@ -156,16 +158,14 @@ impl ShaderEntry {
         }
 
         if !self.stages.is_empty() {
-            self.layout = Some(
-                PipelineLayout::new(
-                    device.clone(),
-                    PipelineDescriptorSetLayoutCreateInfo::from_stages(&self.stages)
-                        .into_pipeline_layout_create_info(device.clone())
-                        .unwrap(),
-                )
-                .unwrap(),
-            );
+            let create_info = PipelineDescriptorSetLayoutCreateInfo::from_stages(&self.stages)
+                .into_pipeline_layout_create_info(device.clone())
+                .map_err(|e| format!("incompatible descriptor sets across stages: {e:?}"))?;
+            let layout = PipelineLayout::new(device.clone(), create_info)
+                .map_err(|e| format!("failed to create pipeline layout: {e:?}"))?;
+            self.layout = Some(layout);
         }
+        Ok(())
     }
 }
 
@@ -215,11 +215,11 @@ impl EffectFactory {
                             log::debug!("Found shader {}", modified_shader_path.display());
                             self.shaders
                                 .write()
-                                .unwrap()
+                                .expect("shader cache lock poisoned")
                                 .insert(modified_shader_path, entry.clone());
                         }
                     }
-                    let mut shader_map = self.shaders.write().unwrap();
+                    let mut shader_map = self.shaders.write().expect("shader cache lock poisoned");
                     shader_map.extend(shaders);
                 }
                 Err(error) => {
@@ -250,9 +250,14 @@ impl EffectFactory {
         let mut shaders = Self::walk_dir(root, &device)
             .map_err(|e| format!("Failed to walk shader directory: {}", e))?;
 
-        for (_, entry) in shaders.iter_mut() {
-            entry.initialize(&device);
-        }
+        // A shader with a bad layout is skipped so the rest of the directory still loads.
+        shaders.retain(|shader_path, entry| match entry.initialize(&device) {
+            Ok(()) => true,
+            Err(error) => {
+                log::error!("Skipping shader {}: {}", shader_path.display(), error);
+                false
+            }
+        });
 
         Ok(shaders)
     }
@@ -390,15 +395,7 @@ impl EffectFactory {
         render_context: &Arc<ChaosRenderContext>,
     ) -> Result<ChaosEffect, ChaosEffectBuildError> {
         let path = &usage.path;
-        let shader_map = self.shaders.read();
-        if shader_map.is_err() {
-            return Err(ChaosEffectBuildError::ShaderNotFound {
-                shader_path: path.display().to_string(),
-                error: "Failed to acquire shader cache lock".to_string(),
-            });
-        }
-
-        let shader_entries = shader_map.unwrap();
+        let shader_entries = self.shaders.read().expect("shader cache lock poisoned");
         let entry = shader_entries.get(path);
         match entry {
             Some(shader_entry) => {
@@ -427,15 +424,16 @@ impl EffectFactory {
             })?
             .entry_point;
 
-        let vertex_input_state = T::per_vertex().definition(vertex_entry_point);
-
-        if let Err(e) = vertex_input_state {
-            return Err(ChaosEffectBuildError::VulkanError {
+        let vertex_input_state = T::per_vertex()
+            .definition(vertex_entry_point)
+            .map_err(|e| ChaosEffectBuildError::VulkanError {
                 vulkan_error: format!("{:?}", e),
-            });
-        }
-
-        let vertex_input_state = vertex_input_state.unwrap();
+            })?;
+        // set whenever the entry has stages, and it has at least the vertex stage found above
+        let layout = shader_entry
+            .layout
+            .clone()
+            .expect("shader entries with stages always have a layout");
         let use_dynamic_viewport = usage.viewports.is_empty();
         // When no fixed viewports are provided, the pipeline uses dynamic
         // viewport + scissor state so it stays valid across window resizes.
@@ -451,8 +449,7 @@ impl EffectFactory {
         } else {
             usage.viewports.iter().map(|_| Scissor::default()).collect()
         };
-        let mut dynamic_state =
-            GraphicsPipelineCreateInfo::layout(shader_entry.layout.clone().unwrap()).dynamic_state;
+        let mut dynamic_state = GraphicsPipelineCreateInfo::layout(layout.clone()).dynamic_state;
         if use_dynamic_viewport {
             dynamic_state.insert(DynamicState::Viewport);
             dynamic_state.insert(DynamicState::Scissor);
@@ -510,7 +507,7 @@ impl EffectFactory {
                     },
                 )),
                 color_blend_state: Some(color_blend_state),
-                ..GraphicsPipelineCreateInfo::layout(shader_entry.layout.clone().unwrap())
+                ..GraphicsPipelineCreateInfo::layout(layout)
             },
         );
 

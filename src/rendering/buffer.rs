@@ -1,16 +1,14 @@
-use std::fmt::Display;
 use std::sync::Arc;
 
 use vulkano::buffer::{
     Buffer, BufferContents, BufferCreateInfo, BufferUsage, IndexBuffer, Subbuffer,
 };
-use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter};
 use vulkano::pipeline::graphics::vertex_input::Vertex;
 
 use crate::rendering::command_buffer::ChaosCommandBuffer;
 use crate::rendering::context::ChaosRenderContext;
-use crate::rendering::errors::ChaosRenderingError;
+use crate::rendering::errors::RenderError;
 
 #[derive(Debug, Clone)]
 pub enum ChaosBufferUsage {
@@ -27,14 +25,6 @@ pub enum ChaosBufferUsage {
     AccelerationStructureStorage,
     ShaderBindingTable,
     Invalid,
-}
-
-#[derive(Debug, Clone)]
-pub enum BufferError {
-    ValidationError(String),
-    RenderingError(ChaosRenderingError),
-    BufferNotBound,
-    BufferNotFound(String),
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +78,10 @@ impl ChaosBuffer {
         }
     }
 
-    pub fn set_data_from_vec<T: BufferContents>(&mut self, data: Vec<T>) -> Result<(), String> {
+    pub fn set_data_from_vec<T: BufferContents>(
+        &mut self,
+        data: Vec<T>,
+    ) -> Result<(), RenderError> {
         self.length = data.len();
 
         let buffer = Buffer::from_iter(
@@ -112,12 +105,12 @@ impl ChaosBuffer {
             Err(error) => {
                 self.buffer = None;
                 self.length = 0;
-                Err(format!("{:?}", error))
+                Err(RenderError::allocation(self.name.clone(), error))
             }
         }
     }
 
-    pub fn set_data<T: BufferContents>(&mut self, data: T) -> Result<(), String> {
+    pub fn set_data<T: BufferContents>(&mut self, data: T) -> Result<(), RenderError> {
         self.set_data_from_vec(vec![data])
     }
 
@@ -133,15 +126,15 @@ impl ChaosBuffer {
         &self,
         index: u32,
         command_buffer: &mut ChaosCommandBuffer,
-    ) -> Result<(), BufferError> {
+    ) -> Result<(), RenderError> {
         if let Some(buffer) = &self.buffer {
             let buffer = buffer.as_ref().clone();
-            command_buffer
-                .bind_vertex_buffers(index, &[buffer])
-                .map_err(|e| BufferError::RenderingError(e))?;
+            command_buffer.bind_vertex_buffers(index, &[buffer]);
             Ok(())
         } else {
-            Err(BufferError::BufferNotBound)
+            Err(RenderError::BufferNotUploaded {
+                name: self.name.clone(),
+            })
         }
     }
 }
@@ -156,7 +149,7 @@ impl<V: Vertex> ChaosVertexBuffer<V> {
         }
     }
 
-    pub fn set_data_from_vec(&mut self, data: Vec<V>) -> Result<(), String> {
+    pub fn set_data_from_vec(&mut self, data: Vec<V>) -> Result<(), RenderError> {
         self.length = data.len();
 
         let buffer = Buffer::from_iter(
@@ -181,24 +174,24 @@ impl<V: Vertex> ChaosVertexBuffer<V> {
             Err(error) => {
                 self.buffer = None;
                 self.length = 0;
-                Err(format!("{:?}", error))
+                Err(RenderError::allocation(self.name.clone(), error))
             }
         }
     }
 
-    pub fn set_data(&mut self, data: V) -> Result<(), String> {
+    pub fn set_data(&mut self, data: V) -> Result<(), RenderError> {
         self.set_data_from_vec(vec![data])
     }
 
-    pub fn bind(&self, command_buffer: &mut ChaosCommandBuffer) -> Result<(), BufferError> {
+    pub fn bind(&self, command_buffer: &mut ChaosCommandBuffer) -> Result<(), RenderError> {
         if let Some(buffer) = &self.buffer {
             let buffer = buffer.as_ref().clone();
-            command_buffer
-                .bind_vertex_buffers(0, &[buffer.into_bytes()])
-                .map_err(|e| BufferError::RenderingError(e))?;
+            command_buffer.bind_vertex_buffers(0, &[buffer.into_bytes()]);
             Ok(())
         } else {
-            Err(BufferError::BufferNotBound)
+            Err(RenderError::BufferNotUploaded {
+                name: self.name.clone(),
+            })
         }
     }
 
@@ -225,7 +218,7 @@ impl ChaosIndexBuffer {
         }
     }
 
-    pub fn set_u8(&mut self, data: Vec<u8>) -> Result<(), BufferError> {
+    pub fn set_u8(&mut self, data: Vec<u8>) -> Result<(), RenderError> {
         self.length = data.len();
 
         let buffer = Buffer::from_iter(
@@ -241,13 +234,13 @@ impl ChaosIndexBuffer {
             },
             data.into_iter(),
         )
-        .map_err(|e| BufferError::ValidationError(e.to_string()))?;
+        .map_err(|e| RenderError::allocation(self.name.clone(), e))?;
 
         self.buffer = Some(Arc::new(IndexBuffer::from(buffer)));
         Ok(())
     }
 
-    pub fn set_u16(&mut self, data: Vec<u16>) -> Result<(), BufferError> {
+    pub fn set_u16(&mut self, data: Vec<u16>) -> Result<(), RenderError> {
         self.length = data.len();
 
         let buffer = Buffer::from_iter(
@@ -263,13 +256,13 @@ impl ChaosIndexBuffer {
             },
             data.into_iter(),
         )
-        .map_err(|e| BufferError::ValidationError(e.to_string()))?;
+        .map_err(|e| RenderError::allocation(self.name.clone(), e))?;
 
         self.buffer = Some(Arc::new(IndexBuffer::from(buffer)));
         Ok(())
     }
 
-    pub fn set_u32(&mut self, data: Vec<u32>) -> Result<(), BufferError> {
+    pub fn set_u32(&mut self, data: Vec<u32>) -> Result<(), RenderError> {
         self.length = data.len();
 
         let buffer = Buffer::from_iter(
@@ -285,21 +278,21 @@ impl ChaosIndexBuffer {
             },
             data.into_iter(),
         )
-        .map_err(|e| BufferError::ValidationError(e.to_string()))?;
+        .map_err(|e| RenderError::allocation(self.name.clone(), e))?;
 
         self.buffer = Some(Arc::new(IndexBuffer::from(buffer)));
         Ok(())
     }
 
-    pub fn bind(&self, command_buffer: &mut ChaosCommandBuffer) -> Result<(), BufferError> {
+    pub fn bind(&self, command_buffer: &mut ChaosCommandBuffer) -> Result<(), RenderError> {
         if let Some(buffer) = &self.buffer {
             let buffer = buffer.as_ref().clone();
-            command_buffer
-                .bind_index_buffer(&buffer)
-                .map_err(|e| BufferError::RenderingError(e))?;
+            command_buffer.bind_index_buffer(&buffer);
             Ok(())
         } else {
-            Err(BufferError::BufferNotBound)
+            Err(RenderError::BufferNotUploaded {
+                name: self.name.clone(),
+            })
         }
     }
 }
@@ -342,17 +335,6 @@ impl From<ChaosBufferMemoryType> for MemoryTypeFilter {
             }
             ChaosBufferMemoryType::HostSequentialWrite => MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ChaosBufferMemoryType::HostRandomAccess => MemoryTypeFilter::HOST_RANDOM_ACCESS,
-        }
-    }
-}
-
-impl Display for BufferError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BufferError::RenderingError(e) => write!(f, "Rendering error: {:?}", e),
-            BufferError::ValidationError(e) => write!(f, "Buffer validation error: {}", e),
-            BufferError::BufferNotFound(e) => write!(f, "Buffer not found: {}", e),
-            BufferError::BufferNotBound => write!(f, "Buffer not bound"),
         }
     }
 }

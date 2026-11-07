@@ -5,6 +5,7 @@ use vulkano::image::view::ImageView;
 use vulkano::image::{Image, ImageCreateInfo, ImageUsage};
 
 use crate::rendering::context::ChaosRenderContext;
+use crate::rendering::errors::{RenderError, RenderResultExt};
 
 #[derive(Debug, Clone)]
 pub struct ChaosTextureDescription {
@@ -24,10 +25,10 @@ pub struct ChaosTexture {
 }
 
 impl ChaosTexture {
-    pub fn from_existing(name: String, image: Arc<Image>) -> Self {
-        Self {
+    pub fn from_existing(name: String, image: Arc<Image>) -> Result<Self, RenderError> {
+        Ok(Self {
             inner_image: image.clone(),
-            inner_image_view: ImageView::new_default(image.clone()).unwrap(),
+            inner_image_view: ImageView::new_default(image.clone()).context("create image view")?,
             description: ChaosTextureDescription {
                 name,
                 dimensions: image.extent(),
@@ -36,7 +37,7 @@ impl ChaosTexture {
                 format: image.format(),
                 image_usage: image.usage(),
             },
-        }
+        })
     }
 
     pub fn depth_target(
@@ -45,7 +46,7 @@ impl ChaosTexture {
         width: u32,
         height: u32,
         render_context: Arc<ChaosRenderContext>,
-    ) -> Self {
+    ) -> Result<Self, RenderError> {
         Self::new(
             name,
             [width, height, 1],
@@ -63,7 +64,7 @@ impl ChaosTexture {
         width: u32,
         height: u32,
         render_context: Arc<ChaosRenderContext>,
-    ) -> Self {
+    ) -> Result<Self, RenderError> {
         Self::new(
             name,
             [width, height, 1],
@@ -83,7 +84,7 @@ impl ChaosTexture {
         format: Format,
         image_usage: ImageUsage,
         render_context: Arc<ChaosRenderContext>,
-    ) -> Self {
+    ) -> Result<Self, RenderError> {
         let create_info = ImageCreateInfo {
             format,
             extent: dimensions,
@@ -99,11 +100,12 @@ impl ChaosTexture {
             create_info,
             Default::default(),
         )
-        .unwrap();
+        .map_err(|e| RenderError::allocation(name.clone(), e))?;
 
-        let inner_image_view = ImageView::new_default(inner_image.clone()).unwrap();
+        let inner_image_view =
+            ImageView::new_default(inner_image.clone()).context("create image view")?;
 
-        Self {
+        Ok(Self {
             inner_image,
             inner_image_view,
             description: ChaosTextureDescription {
@@ -114,7 +116,7 @@ impl ChaosTexture {
                 format: format,
                 image_usage: image_usage,
             },
-        }
+        })
     }
 
     pub fn image_view(&self) -> Arc<ImageView> {

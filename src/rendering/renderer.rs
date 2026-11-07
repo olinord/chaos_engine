@@ -1,7 +1,11 @@
 use log::debug;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 use vulkano::{
-    Validated, VulkanError, VulkanLibrary,
+    VulkanLibrary,
     command_buffer::allocator::StandardCommandBufferAllocator,
     device::{Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags},
     image::ImageLayout,
@@ -22,8 +26,11 @@ use crate::rendering::{
         ChaosClearValue, ChaosCommandBuffer, ChaosRenderAttachment, ChaosRenderAttachmentLoadOp,
         ChaosRenderExtent,
     },
-    context::ChaosRenderContext, draw_command::ChaosDrawQueue,
-    swapchain::get_swapchain_and_backbuffers, texture::ChaosTexture,
+    context::ChaosRenderContext,
+    draw_command::ChaosDrawQueue,
+    errors::{RenderError, RenderResultExt},
+    swapchain::get_swapchain_and_backbuffers,
+    texture::ChaosTexture,
 };
 
 use crate::frame_zone;
@@ -37,7 +44,7 @@ pub type Fence =
 #[allow(unused)]
 pub struct ChaosRenderer {
     render_context: Arc<ChaosRenderContext>,
-    queue: Option<Arc<Queue>>,
+    queue: Arc<Queue>,
     current_frame: u128,
     current_buffer: u32,
     current_acquire_future: Option<SwapchainAcquireFuture>,
@@ -45,6 +52,8 @@ pub struct ChaosRenderer {
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     directories: HashMap<PathBuf, PathBuf>,
     pending_resize: Option<[u32; 2]>,
+    // Draw command failures that were already logged, so a broken draw doesn't log every frame.
+    reported_draw_errors: HashSet<&'static str>,
 }
 
 impl ChaosRenderer {
@@ -52,30 +61,25 @@ impl ChaosRenderer {
         display_handle: &DisplayHandle,
         window: Arc<Window>,
         directories: &HashMap<PathBuf, PathBuf>,
-    ) -> ChaosRenderer {
-        let library = VulkanLibrary::new().expect("no local Vulkan library/DLL");
+    ) -> Result<ChaosRenderer, RenderError> {
+        let library = VulkanLibrary::new()
+            .map_err(|e| RenderError::initialization("load the Vulkan library", e))?;
 
-        let required_extensions = match Surface::required_extensions(display_handle) {
-            Ok(ext) => ext,
-            Err(_) => panic!("Couldn't get required surface extensions"),
-        };
+        let required_extensions = Surface::required_extensions(display_handle)
+            .map_err(|e| RenderError::initialization("query required surface extensions", e))?;
 
-        let instance = match Instance::new(
+        let instance = Instance::new(
             library,
             InstanceCreateInfo {
                 flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
                 enabled_extensions: required_extensions,
                 ..Default::default()
             },
-        ) {
-            Ok(instance) => instance,
-            Err(err) => panic!("Failed to create instance: {}", err),
-        };
+        )
+        .map_err(|e| RenderError::initialization("create Vulkan instance", e))?;
 
-        let surface = match Surface::from_window(instance.clone(), window.clone()) {
-            Ok(surface) => surface,
-            Err(err) => panic!("Failed to create surface: {}", err),
-        };
+        let surface = Surface::from_window(instance.clone(), window.clone())
+            .map_err(|e| RenderError::initialization("create window surface", e))?;
 
         let device_extensions = vulkano::device::DeviceExtensions {
             khr_swapchain: true,
@@ -83,7 +87,7 @@ impl ChaosRenderer {
             ..vulkano::device::DeviceExtensions::empty()
         };
         let (physical_device, queue_family_index) =
-            select_physical_device(&instance, &surface, &device_extensions);
+            select_physical_device(&instance, &surface, &device_extensions)?;
 
         let graphic_family_index: u32 = physical_device
             .queue_family_properties()
@@ -91,9 +95,9 @@ impl ChaosRenderer {
             .enumerate()
             .find(|(_, qf)| qf.queue_flags.contains(QueueFlags::GRAPHICS))
             .map(|(index, _)| index as u32)
-            .unwrap();
+            .expect("select_physical_device only returns devices with a graphics queue");
 
-        let (device, mut queues) = match Device::new(
+        let (device, mut queues) = Device::new(
             physical_device.clone(),
             DeviceCreateInfo {
                 // here we pass the desired queue family to use by index
@@ -118,28 +122,23 @@ impl ChaosRenderer {
                 },
                 ..Default::default()
             },
-        ) {
-            Ok(r) => r,
-            Err(e) => panic!("failed to create device: {e}"),
-        };
+        )
+        .map_err(|e| RenderError::initialization("create logical device", e))?;
 
         debug!("Device created successfully");
-        let queue = queues.next().unwrap();
+        let queue = queues
+            .next()
+            .expect("Device::new returns one queue per QueueCreateInfo");
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
         let inner_size = window.inner_size();
-        let result = get_swapchain_and_backbuffers(
+        let (swapchain, backbuffers) = get_swapchain_and_backbuffers(
             physical_device.clone(),
             device.clone(),
             surface.clone(),
             [inner_size.width, inner_size.height],
-        );
-        if let Err(e) = &result {
-            panic!("failed to create swapchain: {e:?}")
-        }
-
-        let (swapchain, backbuffers) = result.unwrap();
+        )?;
 
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
             device.clone(),
@@ -159,9 +158,9 @@ impl ChaosRenderer {
             0.0,
         ));
 
-        ChaosRenderer {
+        Ok(ChaosRenderer {
             render_context: render_context.clone(),
-            queue: Some(queue),
+            queue,
             current_frame: 0,
             current_buffer: 0,
             current_acquire_future: None,
@@ -169,28 +168,37 @@ impl ChaosRenderer {
             command_buffer_allocator,
             directories: directories.clone(),
             pending_resize: None,
-        }
+            reported_draw_errors: HashSet::new(),
+        })
     }
 
-    pub fn start_frame(&mut self) -> Option<ChaosCommandBuffer> {
+    /// Acquires the next swapchain image and starts recording the frame.
+    ///
+    /// Returns `Ok(None)` when the frame should be skipped because the swapchain is out of
+    /// date; it is recreated before the next frame. Any `Err` is fatal.
+    pub fn start_frame(&mut self) -> Result<Option<ChaosCommandBuffer>, RenderError> {
         if let Some(extent) = self.pending_resize.take() {
-            if let Err(e) = self.recreate_swapchain_now(extent) {
-                log::warn!("Failed to recreate swapchain: {e:?}");
-                self.pending_resize = Some(extent);
-                return None;
+            match self.recreate_swapchain_now(extent) {
+                Ok(()) => {}
+                // The surface changed again while recreating; try again next frame.
+                Err(RenderError::SwapchainOutOfDate) => {
+                    self.pending_resize = Some(extent);
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
             }
         }
 
         let (image_i, suboptimal, acquire_future) =
             match swapchain::acquire_next_image(self.render_context.swapchain(), None)
-                .map_err(Validated::unwrap)
+                .context("acquire next swapchain image")
             {
                 Ok(r) => r,
-                Err(VulkanError::OutOfDate) => {
+                Err(RenderError::SwapchainOutOfDate) => {
                     self.pending_resize = Some(self.render_context.swapchain().image_extent());
-                    return None;
+                    return Ok(None);
                 }
-                Err(e) => panic!("failed to acquire next image: {e}"),
+                Err(e) => return Err(e),
             };
 
         if suboptimal {
@@ -199,7 +207,9 @@ impl ChaosRenderer {
         }
 
         if let Some(image_fence) = &self.fences[image_i as usize] {
-            image_fence.wait(None).unwrap();
+            image_fence
+                .wait(None)
+                .context("wait for previous frame on this image")?;
         }
 
         // clear the last frame's descriptor set cache
@@ -211,30 +221,17 @@ impl ChaosRenderer {
         let backbuffers = self.render_context.backbuffers();
 
         self.begin_rendering(backbuffers[image_i as usize].clone())
+            .map(Some)
     }
 
     pub fn begin_rendering(
         &self,
         destination: Arc<ChaosTexture>,
-    ) -> Option<ChaosCommandBuffer> {
-        let queue = match self.queue.clone() {
-            Some(queue) => queue,
-            None => {
-                log::error!("Renderer queue is None");
-                return None;
-            }
-        };
-
-        let mut command_buffer = match ChaosCommandBuffer::new(
+    ) -> Result<ChaosCommandBuffer, RenderError> {
+        let mut command_buffer = ChaosCommandBuffer::new(
             self.command_buffer_allocator.clone(),
-            queue.queue_family_index(),
-        ) {
-            Ok(buffer) => buffer,
-            Err(e) => {
-                log::error!("Failed to create a command buffer {:?}", e);
-                return None;
-            }
-        };
+            self.queue.queue_family_index(),
+        )?;
 
         let color_attachment = Arc::new(ChaosRenderAttachment::new(
             destination,
@@ -254,7 +251,7 @@ impl ChaosRenderer {
         // Push the current viewport/scissor to the command buffer so pipelines
         // built with dynamic viewport state (see `EffectFactory`) pick up the
         // current window size after a resize.
-        let result = command_buffer
+        command_buffer
             .begin_rendering(
                 &[Some(color_attachment)],
                 None,
@@ -264,45 +261,37 @@ impl ChaosRenderer {
                     offset: None,
                 }),
             )
-            .and_then(|cb| cb.set_viewport(self.render_context.viewport()))
-            .and_then(|cb| {
-                cb.set_scissor(Scissor {
-                    offset: [0, 0],
-                    extent: fb_extent,
-                })
+            .set_viewport(self.render_context.viewport())
+            .set_scissor(Scissor {
+                offset: [0, 0],
+                extent: fb_extent,
             });
-        if let Err(e) = result {
-            log::error!("Failed to begin rendering: {:?}", e);
-            return None;
-        }
-        Some(command_buffer)
+        Ok(command_buffer)
     }
 
-    pub fn render(&self, draw_queue: ChaosDrawQueue, command_buffer: &mut ChaosCommandBuffer) {
+    /// Records every draw command. A failing draw command (e.g. an effect whose buffers were
+    /// never uploaded) is skipped and logged once, instead of taking the whole frame down.
+    pub fn render(&mut self, draw_queue: ChaosDrawQueue, command_buffer: &mut ChaosCommandBuffer) {
         // sort the draw queue by sort key, then execute each draw function in order
         let mut draw_queue = draw_queue;
         draw_queue
             .sort_by_key(|draw_command| (draw_command.render_phase, draw_command.effect_hash));
         for draw_command in draw_queue {
             frame_zone!("render draw command");
-            (draw_command.draw_function)(command_buffer).unwrap();
+            if let Err(error) = (draw_command.draw_function)(command_buffer) {
+                if self.reported_draw_errors.insert(error) {
+                    log::error!("Skipping draw command: {error}");
+                }
+            }
         }
     }
 
-    pub fn end_frame(&mut self, mut command_buffer: ChaosCommandBuffer) {
-        if let Err(e) = command_buffer.end_rendering() {
-            log::error!("Failed to end rendering: {:?}", e);
-        }
+    pub fn end_frame(&mut self, mut command_buffer: ChaosCommandBuffer) -> Result<(), RenderError> {
+        command_buffer.end_rendering();
         // TODO(step 5): submit `finished_frame.cmd_buffer` and keep `finished_frame`
         // alive until this frame's fence signals. Until then the recorded work is
         // dropped here and never reaches the GPU.
-        let _finished_frame = match command_buffer.finish() {
-            Ok(frame) => Some(frame),
-            Err(e) => {
-                log::error!("Failed to finish command buffer: {:?}", e);
-                None
-            }
-        };
+        let _finished_frame = command_buffer.finish()?;
 
         let image_i = self.current_buffer;
         let acquire_future = self
@@ -325,7 +314,7 @@ impl ChaosRenderer {
         let future = previous_future
             .join(acquire_future)
             .then_swapchain_present(
-                self.queue.clone().unwrap(),
+                self.queue.clone(),
                 SwapchainPresentInfo::swapchain_image_index(
                     self.render_context.swapchain(),
                     image_i,
@@ -333,19 +322,17 @@ impl ChaosRenderer {
             )
             .then_signal_fence_and_flush();
 
-        self.fences[image_i as usize] = match future.map_err(Validated::unwrap) {
+        self.fences[image_i as usize] = match future.context("present frame") {
             Ok(value) => Some(value),
-            Err(VulkanError::OutOfDate) => {
+            Err(RenderError::SwapchainOutOfDate) => {
                 self.pending_resize = Some(self.render_context.swapchain().image_extent());
                 None
             }
-            Err(e) => {
-                println!("failed to flush future: {e}");
-                None
-            }
+            Err(e) => return Err(e),
         };
         self.current_buffer = image_i;
         self.current_frame = self.current_frame.wrapping_add(1);
+        Ok(())
     }
 
     pub fn render_context(&self) -> &Arc<ChaosRenderContext> {
@@ -361,11 +348,13 @@ impl ChaosRenderer {
         self.pending_resize = Some(extent);
     }
 
-    fn recreate_swapchain_now(&mut self, extent: [u32; 2]) -> Result<(), Validated<VulkanError>> {
+    fn recreate_swapchain_now(&mut self, extent: [u32; 2]) -> Result<(), RenderError> {
         // Wait for any in-flight frames before retiring the current swapchain.
         for fence_slot in self.fences.iter_mut() {
             if let Some(fence) = fence_slot.take() {
-                let _ = fence.wait(None);
+                fence
+                    .wait(None)
+                    .context("wait for in-flight frames before swapchain recreation")?;
             }
         }
         self.render_context.recreate_swapchain(extent)

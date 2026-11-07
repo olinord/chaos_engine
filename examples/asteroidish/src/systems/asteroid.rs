@@ -309,14 +309,14 @@ impl ChaosRenderSystem for AsteroidSystem {
                 effect_guard
                     .bind_descriptor_sets(command_buffer)
                     .map_err(|_| "Failed to bind descriptor sets for asteroid effect")?;
-                command_buffer
-                    .bind_pipeline_graphics(effect_guard.pipeline())
-                    .map_err(|_| "Failed to bind asteroid graphics pipeline")?;
+                command_buffer.bind_pipeline_graphics(effect_guard.pipeline());
 
                 let mesh_guard = asteroid_mesh_buffer
                     .lock()
                     .map_err(|_| "Failed to lock asteroid mesh buffer")?;
-                mesh_guard.draw(command_buffer);
+                mesh_guard
+                    .draw(command_buffer)
+                    .map_err(|_| "Failed to draw asteroids")?;
                 Ok(())
             }),
         });

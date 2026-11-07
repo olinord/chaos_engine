@@ -411,25 +411,11 @@ impl ChaosRenderSystem for ShipSystem {
                 ship_effect
                     .bind_descriptor_sets(command_buffer)
                     .map_err(|_| "Failed to bind descriptor sets for ship effect")?;
-                command_buffer
-                    .bind_pipeline_graphics(ship_effect.pipeline())
-                    .map_err(|_| "Failed to bind ship graphics pipeline")?
-                    .bind_vertex_buffers(
-                        0,
-                        ship_buffer
-                            .buffer()
-                            .ok_or("Ship buffer not bound")?
-                            .as_ref()
-                            .clone(),
-                    )
+                command_buffer.bind_pipeline_graphics(ship_effect.pipeline());
+                ship_buffer
+                    .bind(0, command_buffer)
                     .map_err(|_| "Failed to bind ship vertex buffer")?;
-                unsafe {
-                    let result = command_buffer.draw(ship_buffer.length(), 1, 0, 0);
-                    if let Err(e) = result {
-                        println!("Failed to draw ship: {:?}", e);
-                        return Err("Failed to draw ship");
-                    }
-                }
+                command_buffer.draw(ship_buffer.length(), 1, 0, 0);
                 Ok(())
             }),
         };
@@ -454,24 +440,11 @@ impl ChaosRenderSystem for ShipSystem {
                         .bind_descriptor_sets(command_buffer)
                         .map_err(|_| "Failed to bind descriptor sets for bullet effect")?;
 
-                    command_buffer
-                        .bind_pipeline_graphics(bullet_effect.pipeline())
-                        .map_err(|_| "Failed to bind bullet graphics pipeline")?
-                        .bind_vertex_buffers(
-                            0,
-                            bullet_buffer
-                                .buffer()
-                                .ok_or("Bullet buffer not bound")?
-                                .as_ref()
-                                .clone(),
-                        )
+                    command_buffer.bind_pipeline_graphics(bullet_effect.pipeline());
+                    bullet_buffer
+                        .bind(0, command_buffer)
                         .map_err(|_| "Failed to bind bullet vertex buffer")?;
-
-                    unsafe {
-                        command_buffer
-                            .draw(bullet_buffer.length(), bullet_count, 0, 0)
-                            .map_err(|_| "Failed to draw bullets")?;
-                    }
+                    command_buffer.draw(bullet_buffer.length(), bullet_count, 0, 0);
                     Ok(())
                 }),
             };

@@ -6,6 +6,7 @@ pub mod assets;
 pub mod ast;
 pub mod colors;
 pub mod default_font;
+pub mod errors;
 pub mod events;
 pub mod glyph_atlas;
 pub mod layout;

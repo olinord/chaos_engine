@@ -16,6 +16,7 @@ use crate::{
         draw_command::{ChaosDrawCommand, ChaosDrawQueue, ChaosRenderPhase},
         effect::ChaosEffect,
         effect_factory::{EffectFactory, EffectUsage},
+        errors::{RenderError, error_chain},
     },
     ui::{
         FontId, NodeId, TextureId,
@@ -181,14 +182,14 @@ pub trait UiRenderBackend {
         _ctx: &Arc<ChaosRenderContext>,
         _paint: &PaintList,
         _viewport: UiViewport,
-    ) -> Result<(), String> {
+    ) -> Result<(), RenderError> {
         Ok(())
     }
     fn submit_paint_list(
         &mut self,
         _paint: &PaintList,
         _draw_queue: &mut ChaosDrawQueue,
-    ) -> Result<(), String> {
+    ) -> Result<(), RenderError> {
         Ok(())
     }
 }
@@ -292,7 +293,8 @@ impl VulkanUiBackend {
             .map_err(|e| format!("failed to build ui_rect effect: {e}"))?;
 
         let mut quad = ChaosVertexBuffer::<UiRectVertex>::new("ui-rect-quad".into(), ctx.clone());
-        quad.set_data_from_vec(unit_quad_vertices())?;
+        quad.set_data_from_vec(unit_quad_vertices())
+            .map_err(|e| format!("failed to upload ui quad: {}", error_chain(&e)))?;
 
         Ok(Self {
             effect: Arc::new(Mutex::new(effect)),
@@ -348,15 +350,12 @@ impl UiRenderBackend for VulkanUiBackend {
         _ctx: &Arc<ChaosRenderContext>,
         paint: &PaintList,
         viewport: UiViewport,
-    ) -> Result<(), String> {
+    ) -> Result<(), RenderError> {
         // --- rect pipeline ---
         let instances = flatten_rect_instances(paint);
         self.instance_count = instances.len() as u32;
 
-        let mut effect = self
-            .effect
-            .lock()
-            .map_err(|_| "failed to lock ui effect".to_string())?;
+        let mut effect = self.effect.lock().expect("ui effect lock poisoned");
 
         effect.set_uniform_data(0, 0, projection_uniform_for(viewport))?;
         if !instances.is_empty() {
@@ -386,7 +385,7 @@ impl UiRenderBackend for VulkanUiBackend {
 
         let mut text_effect = text_effect_arc
             .lock()
-            .map_err(|_| "failed to lock ui text effect".to_string())?;
+            .expect("ui text effect lock poisoned");
 
         text_effect.set_uniform_data(
             0,
@@ -430,39 +429,28 @@ impl UiRenderBackend for VulkanUiBackend {
         &mut self,
         _paint: &PaintList,
         draw_queue: &mut ChaosDrawQueue,
-    ) -> Result<(), String> {
+    ) -> Result<(), RenderError> {
         // Rect draw call.
         if self.instance_count > 0 {
             let effect = self.effect.clone();
             let quad_buffer = self.quad_buffer.clone();
             let instance_count = self.instance_count;
-            let effect_hash = effect
-                .lock()
-                .map_err(|_| "failed to lock ui effect".to_string())?
-                .hash;
+            let effect_hash = effect.lock().expect("ui effect lock poisoned").hash;
 
             draw_queue.push(ChaosDrawCommand {
                 render_phase: ChaosRenderPhase::Transparent,
                 effect_hash,
                 draw_function: Box::new(move |command_buffer| {
-                    let effect_guard = effect.lock().map_err(|_| "failed to lock ui effect")?;
-                    let quad_guard = quad_buffer
-                        .lock()
-                        .map_err(|_| "failed to lock ui quad buffer")?;
+                    let effect_guard = effect.lock().expect("ui effect lock poisoned");
+                    let quad_guard = quad_buffer.lock().expect("ui quad buffer lock poisoned");
                     effect_guard
                         .bind_descriptor_sets(command_buffer)
                         .map_err(|_| "failed to bind ui descriptor sets")?;
-                    command_buffer
-                        .bind_pipeline_graphics(effect_guard.pipeline())
-                        .map_err(|_| "failed to bind ui pipeline")?;
+                    command_buffer.bind_pipeline_graphics(effect_guard.pipeline());
                     quad_guard
                         .bind(command_buffer)
                         .map_err(|_| "failed to bind ui quad vertex buffer")?;
-                    unsafe {
-                        command_buffer
-                            .draw(6, instance_count, 0, 0)
-                            .map_err(|_| "failed to submit ui draw call")?;
-                    }
+                    command_buffer.draw(6, instance_count, 0, 0);
                     Ok(())
                 }),
             });
@@ -476,33 +464,24 @@ impl UiRenderBackend for VulkanUiBackend {
                 let glyph_instance_count = self.glyph_instance_count;
                 let text_hash = text_effect
                     .lock()
-                    .map_err(|_| "failed to lock ui text effect".to_string())?
+                    .expect("ui text effect lock poisoned")
                     .hash;
 
                 draw_queue.push(ChaosDrawCommand {
                     render_phase: ChaosRenderPhase::UiText,
                     effect_hash: text_hash,
                     draw_function: Box::new(move |command_buffer| {
-                        let effect_guard = text_effect
-                            .lock()
-                            .map_err(|_| "failed to lock ui text effect")?;
-                        let quad_guard = quad_buffer
-                            .lock()
-                            .map_err(|_| "failed to lock ui text quad buffer")?;
+                        let effect_guard =
+                            text_effect.lock().expect("ui text effect lock poisoned");
+                        let quad_guard = quad_buffer.lock().expect("ui quad buffer lock poisoned");
                         effect_guard
                             .bind_descriptor_sets(command_buffer)
                             .map_err(|_| "failed to bind ui text descriptor sets")?;
-                        command_buffer
-                            .bind_pipeline_graphics(effect_guard.pipeline())
-                            .map_err(|_| "failed to bind ui text pipeline")?;
+                        command_buffer.bind_pipeline_graphics(effect_guard.pipeline());
                         quad_guard
                             .bind(command_buffer)
                             .map_err(|_| "failed to bind ui text quad vertex buffer")?;
-                        unsafe {
-                            command_buffer
-                                .draw(6, glyph_instance_count, 0, 0)
-                                .map_err(|_| "failed to submit ui text draw call")?;
-                        }
+                        command_buffer.draw(6, glyph_instance_count, 0, 0);
                         Ok(())
                     }),
                 });

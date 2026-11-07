@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ui::{
+    errors::{ParseError, SourceKind},
     runtime::UiTag,
     selector::Selector,
     style::{Declaration, StyleRule},
@@ -31,75 +32,92 @@ pub struct UiStyleSheetAst {
 }
 
 impl UiStyleSheetAst {
-    pub fn from_stylesheet(stylesheet: &str) -> Result<Self, String> {
+    pub fn from_stylesheet(stylesheet: &str) -> Result<Self, ParseError> {
         let mut rules = Vec::new();
 
+        // byte offset of the current rule in `stylesheet`, for error positions
+        let mut rule_start = 0;
         for (source_order, raw_rule) in stylesheet.split('}').enumerate() {
+            let rule_offset = rule_start;
+            rule_start += raw_rule.len() + 1;
+
             let Some((selector_src, declarations_src)) = raw_rule.split_once('{') else {
                 continue;
             };
-            rules.push(Self::parse_rule(
-                selector_src.trim(),
-                declarations_src.trim(),
-                source_order as u32,
-            )?);
+            let selector_offset =
+                rule_offset + (selector_src.len() - selector_src.trim_start().len());
+            let declarations_offset = rule_offset + selector_src.len() + 1;
+
+            let error_at = |offset: usize, message: String| {
+                ParseError::at(SourceKind::Stylesheet, stylesheet, offset, message)
+            };
+
+            let selector = Selector::from_src(selector_src.trim())
+                .map_err(|message| error_at(selector_offset, message))?;
+            let declarations = Declaration::parse_list(declarations_src)
+                .map_err(|(offset, message)| error_at(declarations_offset + offset, message))?;
+            let specificity = selector.calculate_specificity();
+            rules.push(StyleRule {
+                selector,
+                declarations,
+                specificity,
+                source_order: source_order as u32,
+            });
         }
         Ok(Self { rules })
-    }
-
-    fn parse_rule(
-        selector_src: &str,
-        declarations_src: &str,
-        source_order: u32,
-    ) -> Result<StyleRule, String> {
-        let selector = Selector::from_src(selector_src)?;
-        let declarations = Declaration::from_src(declarations_src)?;
-        let specificity = selector.calculate_specificity();
-        Ok(StyleRule {
-            selector,
-            declarations,
-            specificity,
-            source_order,
-        })
     }
 }
 
 impl UiMarkupNode {
-    pub fn from_src(src: &str) -> Result<Self, String> {
+    pub fn from_src(src: &str) -> Result<Self, ParseError> {
+        let error_at = |offset: usize, message: String| {
+            ParseError::at(SourceKind::Markup, src, offset, message)
+        };
+
         if src.trim().is_empty() {
-            return Err("Empty markup".to_string());
+            return Err(error_at(0, "Empty markup".to_string()));
         }
 
         let mut reader = XmlReader::from_str(src);
         reader.config_mut().trim_text(true);
 
-        let mut stack: Vec<UiMarkupNode> = Vec::new();
+        // open elements, with the byte offset of their start tag
+        let mut stack: Vec<(UiMarkupNode, usize)> = Vec::new();
         let mut root: Option<UiMarkupNode> = None;
 
         loop {
+            // with trim_text the reader skips whitespace, so point at the tag itself
+            let event_start = skip_whitespace(src, reader.buffer_position() as usize);
             match reader.read_event() {
                 Ok(XmlEvent::Start(start)) => {
-                    let node = Self::node_from_start(&reader, start)?;
-                    stack.push(node);
+                    let node = Self::node_from_start(&reader, start)
+                        .map_err(|message| error_at(event_start, message))?;
+                    stack.push((node, event_start));
                 }
                 Ok(XmlEvent::Empty(start)) => {
-                    let node = Self::node_from_start(&reader, start)?;
-                    if let Some(parent) = stack.last_mut() {
+                    let node = Self::node_from_start(&reader, start)
+                        .map_err(|message| error_at(event_start, message))?;
+                    if let Some((parent, _)) = stack.last_mut() {
                         parent.children.push(node);
                     } else if root.is_none() {
                         root = Some(node);
                     } else {
-                        return Err("Markup must contain exactly one root node".to_string());
+                        return Err(error_at(
+                            event_start,
+                            "Markup must contain exactly one root node".to_string(),
+                        ));
                     }
                 }
                 Ok(XmlEvent::Text(text)) => {
                     let content = text
                         .decode()
-                        .map_err(|err| format!("Failed to decode text node: {err}"))?
+                        .map_err(|err| {
+                            error_at(event_start, format!("Failed to decode text node: {err}"))
+                        })?
                         .trim()
                         .to_string();
                     if !content.is_empty() {
-                        if let Some(parent) = stack.last_mut() {
+                        if let Some((parent, _)) = stack.last_mut() {
                             match parent.tag {
                                 UiTag::Text(ref mut t) => {
                                     // <text>content</text> — set the text directly.
@@ -121,16 +139,19 @@ impl UiMarkupNode {
                     }
                 }
                 Ok(XmlEvent::End(_)) => {
-                    let Some(node) = stack.pop() else {
-                        return Err("Unexpected closing tag".to_string());
+                    let Some((node, _)) = stack.pop() else {
+                        return Err(error_at(event_start, "Unexpected closing tag".to_string()));
                     };
 
-                    if let Some(parent) = stack.last_mut() {
+                    if let Some((parent, _)) = stack.last_mut() {
                         parent.children.push(node);
                     } else if root.is_none() {
                         root = Some(node);
                     } else {
-                        return Err("Markup must contain exactly one root node".to_string());
+                        return Err(error_at(
+                            event_start,
+                            "Markup must contain exactly one root node".to_string(),
+                        ));
                     }
                 }
                 Ok(XmlEvent::Eof) => break,
@@ -140,17 +161,25 @@ impl UiMarkupNode {
                     // Intentionally ignored for now.
                 }
                 Ok(other) => {
-                    return Err(format!("Unsupported XML event in markup parser: {other:?}"));
+                    return Err(error_at(
+                        event_start,
+                        format!("Unsupported XML event in markup parser: {other:?}"),
+                    ));
                 }
-                Err(err) => return Err(format!("Failed to parse markup: {err}")),
+                Err(err) => {
+                    return Err(error_at(
+                        reader.error_position() as usize,
+                        format!("Failed to parse markup: {err}"),
+                    ));
+                }
             }
         }
 
-        if !stack.is_empty() {
-            return Err("Unclosed markup tag".to_string());
+        if let Some((_, unclosed_start)) = stack.last() {
+            return Err(error_at(*unclosed_start, "Unclosed markup tag".to_string()));
         }
 
-        root.ok_or_else(|| "No root node found in markup".to_string())
+        root.ok_or_else(|| error_at(0, "No root node found in markup".to_string()))
     }
 
     fn node_from_start(
@@ -183,7 +212,10 @@ impl UiMarkupNode {
             } else if key == "class" {
                 classes = value.split_whitespace().map(ToOwned::to_owned).collect();
             } else if key == "style" {
-                inline_style = Some(Declaration::from_src(&value)?);
+                inline_style = Some(
+                    Declaration::from_src(&value)
+                        .map_err(|err| format!("Invalid style attribute: {err}"))?,
+                );
             }
 
             attributes.insert(key, value);
@@ -198,6 +230,13 @@ impl UiMarkupNode {
             children: Vec::new(),
         })
     }
+}
+
+/// Advances `offset` past any whitespace in `src`.
+fn skip_whitespace(src: &str, offset: usize) -> usize {
+    let offset = offset.min(src.len());
+    let rest = &src[offset..];
+    offset + (rest.len() - rest.trim_start().len())
 }
 
 #[cfg(test)]
@@ -291,5 +330,36 @@ mod tests {
             StyleValue::Opacity(v) => assert_eq!(v, 0.5),
             ref other => panic!("unexpected inline declaration: {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_stylesheet_error_points_at_bad_declaration() {
+        let src = "ui {\n    width: 10px;\n    opacity: lots;\n}";
+        let error = UiStyleSheetAst::from_stylesheet(src).unwrap_err();
+        assert_eq!((error.line, error.column), (3, 5));
+        assert_eq!(error.kind, SourceKind::Stylesheet);
+        assert!(error.message.contains("opacity"));
+    }
+
+    #[test]
+    fn test_stylesheet_error_points_at_bad_selector() {
+        let src = "ui { width: 1px; }\n  div[x] { width: 1px; }";
+        let error = UiStyleSheetAst::from_stylesheet(src).unwrap_err();
+        assert_eq!((error.line, error.column), (2, 3));
+    }
+
+    #[test]
+    fn test_markup_error_points_at_bad_tag() {
+        let src = "<ui>\n  <ui/>\n  <bogus/>\n</ui>";
+        let error = UiMarkupNode::from_src(src).unwrap_err();
+        assert_eq!((error.line, error.column), (3, 3));
+        assert_eq!(error.kind, SourceKind::Markup);
+    }
+
+    #[test]
+    fn test_markup_error_points_at_unclosed_tag() {
+        let src = "<ui>\n  <ui>\n";
+        let error = UiMarkupNode::from_src(src).unwrap_err();
+        assert_eq!(error.line, 2);
     }
 }

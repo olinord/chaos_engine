@@ -80,7 +80,7 @@ impl ChaosComponentManager {
             .or_insert_with(|| Box::new(ComponentStore::<T>::new()))
             .as_any_mut()
             .downcast_mut::<ComponentStore<T>>()
-            .unwrap()
+            .expect("component stores are keyed by the TypeId of their component")
     }
 
     fn borrow_query_stores<'world>(

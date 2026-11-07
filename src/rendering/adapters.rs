@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use log::info;
+
+use crate::rendering::errors::{RenderError, RenderResultExt};
 use vulkano::{
     device::{
         DeviceExtensions, QueueFlags,
@@ -14,12 +16,12 @@ pub fn select_physical_device(
     instance: &Arc<Instance>,
     surface: &Arc<Surface>,
     device_extensions: &DeviceExtensions,
-) -> (Arc<PhysicalDevice>, u32) {
+) -> Result<(Arc<PhysicalDevice>, u32), RenderError> {
     info!("Selecting physical device...");
     // print out the devices and their properties
     for device in instance
         .enumerate_physical_devices()
-        .expect("failed to enumerate physical devices")
+        .context("enumerate physical devices")?
     {
         let properties = device.properties();
         info!(
@@ -35,7 +37,7 @@ pub fn select_physical_device(
 
     let (physical_device, queue_family_index) = instance
         .enumerate_physical_devices()
-        .expect("failed to enumerate physical devices")
+        .context("enumerate physical devices")?
         .filter(|p| p.supported_extensions().contains(device_extensions))
         .filter_map(|p| {
             p.queue_family_properties()
@@ -54,12 +56,15 @@ pub fn select_physical_device(
             PhysicalDeviceType::Cpu => 3,
             _ => 4,
         })
-        .expect("no device available");
+        .ok_or(RenderError::Initialization {
+            what: "no GPU supports the required extensions and a graphics queue that can present",
+            source: None,
+        })?;
     info!(
         "Using device: {} (type: {:?})",
         physical_device.properties().device_name,
         physical_device.properties().device_type,
     );
 
-    (physical_device, queue_family_index)
+    Ok((physical_device, queue_family_index))
 }

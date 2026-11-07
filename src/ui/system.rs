@@ -18,7 +18,10 @@ use crate::ecs::system::ChaosSystem;
 use crate::ecs::world::ChaosWorld;
 use crate::rendering::context::ChaosRenderContext;
 use crate::rendering::draw_command::ChaosDrawQueue;
+use crate::rendering::errors::error_chain;
 use crate::rendering::rendering_system::ChaosRenderSystem;
+use crate::ui::assets::load_template_files;
+use crate::ui::errors::UiAssetError;
 use crate::ui::events::{PointerPos, UiEvent, UiEventRouter, UiInputEvent};
 use crate::ui::layout::{UiLayoutEngine, UiViewport};
 use crate::ui::paint::{
@@ -168,9 +171,14 @@ where
     /// Register a font for text layout and rendering. The font is immediately
     /// seeded into the layout engine; it is also passed to the GPU backend when
     /// `initialize_rendering` runs.
-    pub fn load_font(&mut self, name: &str, bytes: &[u8]) -> Result<FontId, String> {
-        let font = Font::from_bytes(bytes, fontdue::FontSettings::default())
-            .map_err(|e| format!("failed to parse font '{name}': {e}"))?;
+    pub fn load_font(&mut self, name: &str, bytes: &[u8]) -> Result<FontId, UiAssetError> {
+        let font =
+            Font::from_bytes(bytes, fontdue::FontSettings::default()).map_err(|message| {
+                UiAssetError::Font {
+                    name: name.to_string(),
+                    message,
+                }
+            })?;
         let id = self.fonts.len() as FontId;
         self.layout_engine.add_font(id, font.clone());
         self.fonts.insert(id, font);
@@ -353,41 +361,28 @@ where
     /// Re-read both files, re-parse, and swap the template. On any error the
     /// previous template is retained and a warning is logged.
     fn reload_from_paths(&mut self, markup_path: &PathBuf, css_path: &PathBuf) {
-        let markup = match std::fs::read_to_string(markup_path) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!(
-                    "ui hot-reload: failed to read markup {}: {e}",
-                    markup_path.display()
-                );
-                return;
-            }
-        };
-        let css = match std::fs::read_to_string(css_path) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!(
-                    "ui hot-reload: failed to read css {}: {e}",
-                    css_path.display()
-                );
-                return;
-            }
-        };
-        self.apply_reload_from_str(&markup, &css);
+        match load_template_files(markup_path, css_path) {
+            Ok(template) => self.apply_template(template),
+            Err(e) => log::warn!(
+                "ui hot-reload: {}; keeping previous template",
+                error_chain(&e)
+            ),
+        }
     }
 
-    /// Parse the given sources and, on success, swap in the new template,
-    /// rebuild the tree, and mark the full tree Style/Structure/Layout dirty so
-    /// the next passes rebuild layout and paint. On parse failure the previous
-    /// template is retained.
+    /// Parse the given sources and, on success, swap in the new template.
+    /// On parse failure the previous template is retained.
+    #[cfg(test)]
     fn apply_reload_from_str(&mut self, markup: &str, css: &str) {
-        let new_template = match UiTemplate::from_src(markup, css) {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("ui hot-reload: parse failed ({e}); keeping previous template");
-                return;
-            }
-        };
+        match UiTemplate::from_src(markup, css) {
+            Ok(template) => self.apply_template(template),
+            Err(e) => log::warn!("ui hot-reload: {e}; keeping previous template"),
+        }
+    }
+
+    /// Swap in a new template, rebuild the tree, and mark the full tree
+    /// Style/Structure/Layout dirty so the next passes rebuild layout and paint.
+    fn apply_template(&mut self, new_template: UiTemplate) {
         self.template = new_template;
         // Markup changes can add/remove nodes we can't diff, so rebuild the
         // tree and layout engine from scratch rather than trying to patch them.
@@ -624,7 +619,7 @@ where
             backend
                 .upload_resources(ctx, &self.paint_list, self.viewport)
                 .map_err(|e| {
-                    log::error!("UiSystem upload_resources failed: {e}");
+                    log::error!("UiSystem upload_resources failed: {}", error_chain(&e));
                     "ui system upload_resources failed"
                 })?;
             self.paint_dirty = false;
@@ -632,7 +627,7 @@ where
         backend
             .submit_paint_list(&self.paint_list, draw_queue)
             .map_err(|e| {
-                log::error!("UiSystem submit_paint_list failed: {e}");
+                log::error!("UiSystem submit_paint_list failed: {}", error_chain(&e));
                 "ui system submit_paint_list failed"
             })
     }

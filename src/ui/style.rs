@@ -201,22 +201,34 @@ impl Default for ComputedStyle {
 
 impl Declaration {
     pub fn from_src(src: &str) -> Result<Vec<Declaration>, String> {
-        // split the src by the semicolons and parse each declaration
-        let src_declarations = src.split(';').map(|s| s.trim()).filter(|s| !s.is_empty());
+        Self::parse_list(src).map_err(|(_, message)| message)
+    }
 
+    /// Like `from_src`, but a failure also returns the byte offset of the declaration that
+    /// failed, so the stylesheet parser can report a line and column.
+    pub(crate) fn parse_list(src: &str) -> Result<Vec<Declaration>, (usize, String)> {
         let mut declarations = Vec::new();
-        for src_declaration in src_declarations {
-            if let Some((property, value)) = src_declaration.split_once(':') {
-                let property = &property.trim().to_lowercase();
-                let value = &value.trim().to_lowercase();
-                let style_value = StyleValue::from_src(property, value)?;
-                declarations.push(Declaration {
-                    property: property.to_string(),
-                    value: style_value,
-                });
-            } else {
-                return Err(format!("Invalid declaration: {}", src_declaration));
+        // split the src by the semicolons and parse each declaration
+        let mut piece_start = 0;
+        for piece in src.split(';') {
+            let offset = piece_start + (piece.len() - piece.trim_start().len());
+            piece_start += piece.len() + 1;
+
+            let src_declaration = piece.trim();
+            if src_declaration.is_empty() {
+                continue;
             }
+            let Some((property, value)) = src_declaration.split_once(':') else {
+                return Err((offset, format!("Invalid declaration: {}", src_declaration)));
+            };
+            let property = &property.trim().to_lowercase();
+            let value = &value.trim().to_lowercase();
+            let style_value =
+                StyleValue::from_src(property, value).map_err(|message| (offset, message))?;
+            declarations.push(Declaration {
+                property: property.to_string(),
+                value: style_value,
+            });
         }
         Ok(declarations)
     }

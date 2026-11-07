@@ -9,6 +9,7 @@ use vulkano::image::sampler::{
 use vulkano::pipeline::graphics::depth_stencil::CompareOp as VkCompareOp;
 
 use crate::rendering::context::ChaosRenderContext;
+use crate::rendering::errors::{RenderError, RenderResultExt};
 
 #[derive(Debug)]
 pub struct ChaosSampler {
@@ -230,31 +231,35 @@ fn sampler_cache() -> &'static Mutex<HashMap<SamplerDescriptor, Arc<ChaosSampler
 
 impl ChaosSampler {
     /// Returns the cached sampler for `descriptor`, creating it on first use.
-    pub fn get(render_context: &ChaosRenderContext, descriptor: SamplerDescriptor) -> Arc<Self> {
-        let mut cache = sampler_cache().lock().unwrap();
-        cache
-            .entry(descriptor)
-            .or_insert_with(|| {
-                let create_info = descriptor.to_vulkano(render_context.mip_lod_bias());
-                let vk_sampler = Sampler::new(render_context.device(), create_info.clone())
-                    .expect("failed to create sampler");
-                Arc::new(Self {
-                    vk_sampler,
-                    vk_sampler_create_info: create_info,
-                })
-            })
-            .clone()
+    pub fn get(
+        render_context: &ChaosRenderContext,
+        descriptor: SamplerDescriptor,
+    ) -> Result<Arc<Self>, RenderError> {
+        let mut cache = sampler_cache().lock().expect("sampler cache lock poisoned");
+        if let Some(sampler) = cache.get(&descriptor) {
+            return Ok(sampler.clone());
+        }
+
+        let create_info = descriptor.to_vulkano(render_context.mip_lod_bias());
+        let vk_sampler =
+            Sampler::new(render_context.device(), create_info.clone()).context("create sampler")?;
+        let sampler = Arc::new(Self {
+            vk_sampler,
+            vk_sampler_create_info: create_info,
+        });
+        cache.insert(descriptor, sampler.clone());
+        Ok(sampler)
     }
 
-    pub fn linear_clamp(render_context: &ChaosRenderContext) -> Arc<Self> {
+    pub fn linear_clamp(render_context: &ChaosRenderContext) -> Result<Arc<Self>, RenderError> {
         Self::get(render_context, SamplerDescriptor::LINEAR_CLAMP)
     }
 
-    pub fn nearest_clamp(render_context: &ChaosRenderContext) -> Arc<Self> {
+    pub fn nearest_clamp(render_context: &ChaosRenderContext) -> Result<Arc<Self>, RenderError> {
         Self::get(render_context, SamplerDescriptor::NEAREST_CLAMP)
     }
 
-    pub fn linear_repeat(render_context: &ChaosRenderContext) -> Arc<Self> {
+    pub fn linear_repeat(render_context: &ChaosRenderContext) -> Result<Arc<Self>, RenderError> {
         Self::get(render_context, SamplerDescriptor::LINEAR_REPEAT)
     }
 }
