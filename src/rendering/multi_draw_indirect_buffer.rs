@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
 use vulkano::buffer::{BufferContents, Subbuffer};
-use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, DrawIndexedIndirectCommand, PrimaryAutoCommandBuffer,
-};
+use vulkano::command_buffer::DrawIndexedIndirectCommand;
+use vulkano::pipeline::graphics::vertex_input::Vertex;
 
-use crate::rendering::buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage};
+use crate::rendering::buffer::{
+    BufferError, ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage, ChaosIndexBuffer,
+    ChaosVertexBuffer,
+};
+use crate::rendering::command_buffer::ChaosCommandBuffer;
 use crate::rendering::context::ChaosRenderContext;
 
 /// Where one mesh lives inside the shared vertex + index buffers.
@@ -24,7 +27,7 @@ pub struct ChaosMultiDrawIndirectBufferSpan {
 /// - On `flush()` reuploads the GPU buffers if anything changed.
 /// - Each `add` returns a `mesh_id` used as `first_instance`; the vertex shader
 ///   reads `gl_BaseInstance` to index per-mesh data (e.g. a model matrix SSBO).
-pub struct ChaosMultiDrawIndirectBuffer<V: BufferContents + Copy> {
+pub struct ChaosMultiDrawIndirectBuffer<V: Vertex + Clone> {
     pub name: String,
 
     vertices: Vec<V>,
@@ -32,29 +35,22 @@ pub struct ChaosMultiDrawIndirectBuffer<V: BufferContents + Copy> {
     commands: Vec<DrawIndexedIndirectCommand>,
     spans: Vec<ChaosMultiDrawIndirectBufferSpan>,
 
-    vertex_buffer: ChaosBuffer,
-    index_buffer: ChaosBuffer,
+    vertex_buffer: ChaosVertexBuffer<V>,
+    index_buffer: ChaosIndexBuffer,
     indirect_buffer: ChaosBuffer,
 
     dirty: bool,
 }
 
-impl<V: BufferContents + Copy> ChaosMultiDrawIndirectBuffer<V> {
+impl<V: Vertex + Clone> ChaosMultiDrawIndirectBuffer<V> {
     pub fn new(name: impl Into<String>, render_context: Arc<ChaosRenderContext>) -> Self {
         let name = name.into();
         Self {
-            vertex_buffer: ChaosBuffer::new(
+            vertex_buffer: ChaosVertexBuffer::<V>::new(
                 format!("{}-vertex", name),
-                ChaosBufferUsage::VertexBuffer,
-                ChaosBufferMemoryType::PreferDevice,
                 render_context.clone(),
             ),
-            index_buffer: ChaosBuffer::new(
-                format!("{}-index", name),
-                ChaosBufferUsage::IndexBuffer,
-                ChaosBufferMemoryType::PreferDevice,
-                render_context.clone(),
-            ),
+            index_buffer: ChaosIndexBuffer::new(format!("{}-index", name), render_context.clone()),
             indirect_buffer: ChaosBuffer::new(
                 format!("{}-indirect", name),
                 ChaosBufferUsage::IndirectBuffer,
@@ -141,23 +137,13 @@ impl<V: BufferContents + Copy> ChaosMultiDrawIndirectBuffer<V> {
         }
         self.vertex_buffer
             .set_data_from_vec(self.vertices.clone())?;
-        self.index_buffer.set_data_from_vec(self.indices.clone())?;
+        self.index_buffer
+            .set_u32(self.indices.clone())
+            .map_err(|e| format!("replace this error"))?;
         self.indirect_buffer
             .set_data_from_vec(self.commands.clone())?;
         self.dirty = false;
         Ok(())
-    }
-
-    pub fn vertex_subbuffer(&self) -> Option<Subbuffer<[V]>> {
-        self.vertex_buffer
-            .buffer()
-            .map(|arc| (*arc).clone().reinterpret::<[V]>())
-    }
-
-    pub fn index_subbuffer(&self) -> Option<Subbuffer<[u32]>> {
-        self.index_buffer
-            .buffer()
-            .map(|arc| (*arc).clone().reinterpret::<[u32]>())
     }
 
     pub fn indirect_subbuffer(&self) -> Option<Subbuffer<[DrawIndexedIndirectCommand]>> {
@@ -166,37 +152,33 @@ impl<V: BufferContents + Copy> ChaosMultiDrawIndirectBuffer<V> {
             .map(|arc| (*arc).clone().reinterpret::<[DrawIndexedIndirectCommand]>())
     }
 
-    pub fn draw(&self, command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>) {
+    pub fn draw(&self, command_buffer: &mut ChaosCommandBuffer) -> Result<(), BufferError> {
         if self.commands.is_empty() {
-            return;
+            return Ok(());
         }
 
-        self.index_buffer
-            .bind_as_index_buffer(command_buffer)
-            .map_err(|e| format!("Failed to bind index buffer for {}: {:?}", self.name, e))
-            .unwrap();
-        self.vertex_buffer
-            .bind_as_vertex_buffer(0, command_buffer)
-            .map_err(|e| format!("Failed to bind vertex buffer for {}: {:?}", self.name, e))
-            .unwrap();
+        self.index_buffer.bind(command_buffer)?;
+        self.vertex_buffer.bind(command_buffer)?;
 
-        let indirect_subbuffer = self.indirect_subbuffer().ok_or_else(|| {
-            format!(
-                "Failed to get indirect buffer for {}. Did you call flush()?",
-                self.name
-            )
-        });
+        let indirect_subbuffer = match self.indirect_subbuffer() {
+            Some(subbuffer) => subbuffer,
+            None => {
+                return Err(BufferError::BufferNotFound(format!(
+                    "Indirect buffer for {} not found. Did you call flush()?",
+                    self.name
+                )));
+            }
+        };
 
-        unsafe {
-            command_buffer
-                .draw_indexed_indirect(indirect_subbuffer.unwrap())
-                .map_err(|e| {
-                    format!(
-                        "Failed to record draw_indexed_indirect for {}: {:?}",
-                        self.name, e
-                    )
-                })
-                .unwrap();
-        }
+        command_buffer
+            .draw_indexed_indirect(&indirect_subbuffer, 1, self.vertex_buffer.stride())
+            .map_err(|e| {
+                format!(
+                    "Failed to record draw_indexed_indirect for {}: {:?}",
+                    self.name, e
+                )
+            })
+            .unwrap();
+        return Ok(());
     }
 }

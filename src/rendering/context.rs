@@ -17,6 +17,7 @@ use vulkano::{
 };
 
 use crate::rendering::{
+    errors::ChaosRenderingError,
     sampler::{ChaosSampler, SamplerDescriptor},
     texture::ChaosTexture,
 };
@@ -164,7 +165,7 @@ impl ChaosRenderContext {
         key: u64,
         set_layout: &Arc<DescriptorSetLayout>,
         write_fn: impl FnOnce() -> Vec<WriteDescriptorSet>,
-    ) -> Result<Arc<DescriptorSet>, Validated<VulkanError>> {
+    ) -> Result<Arc<DescriptorSet>, ChaosRenderingError> {
         let mut cache = self.descriptor_set_cache.lock().unwrap();
 
         if let Some(set) = cache.get(&key) {
@@ -176,7 +177,8 @@ impl ChaosRenderContext {
             set_layout.clone(),
             write_fn(),
             [],
-        )?;
+        )
+        .map_err(|e| ChaosRenderingError::DescriptorSetCreationError(e.to_string()))?;
         cache.insert(key, set.clone());
         Ok(set)
     }

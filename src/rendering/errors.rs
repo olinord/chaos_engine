@@ -1,0 +1,21 @@
+#[derive(Debug, Clone)]
+pub enum ChaosRenderingError {
+    ChaosCommandBufferCreationError(String),
+    ChaosCommandBufferBeginRenderingError(String),
+    ChaosCommandBufferEndRenderingError(String),
+    ChaosCommandBufferEndError(String),
+    PipelineBarrierError(String),
+    BindGraphicPipelineError(String),
+    BindComputePipelineError(String),
+    BindDescriptorSetError(String),
+    PushConstantError(String),
+    BindVertexBuffers(String),
+    BindIndexBuffers(String),
+    ChaosCommandBufferDrawError(String),
+    ChaosCommandBufferDrawIndexedError(String),
+    ChaosCommandBufferDrawIndexedIndirectError(String),
+    ChaosCommandBufferDispatchError(String),
+    ViewportError(String),
+    ScissorError(String),
+    DescriptorSetCreationError(String),
+}

@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
 use vulkano::descriptor_set::WriteDescriptorSet;
 use vulkano::pipeline::{Pipeline, PipelineBindPoint};
-use vulkano::{Validated, ValidationError, VulkanError};
 use vulkano::{buffer::BufferContents, pipeline::GraphicsPipeline};
 
 use crate::rendering::buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage};
+use crate::rendering::command_buffer::ChaosCommandBuffer;
 use crate::rendering::context::ChaosRenderContext;
+use crate::rendering::errors::ChaosRenderingError;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone, PartialOrd)]
 struct DescriptorBinding {
@@ -202,10 +202,10 @@ impl ChaosEffect {
 
     pub fn bind_push_constants<T: BufferContents>(
         &self,
-        command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        command_buffer: &mut ChaosCommandBuffer,
         offset: u32,
         data: T,
-    ) -> Result<(), Box<ValidationError>> {
+    ) -> Result<(), ChaosRenderingError> {
         command_buffer.push_constants(self.pipeline.layout().clone(), offset, data)?;
         Ok(())
     }
@@ -271,8 +271,8 @@ impl ChaosEffect {
     // gets or creates the desciptor set from the render context and binds it to the command buffer.
     pub fn bind_descriptor_sets(
         &self,
-        cb: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-    ) -> Result<(), Validated<VulkanError>> {
+        command_buffer: &mut ChaosCommandBuffer,
+    ) -> Result<(), ChaosRenderingError> {
         let layout = self.pipeline.layout().clone();
 
         for (set_index, set_layout) in layout.set_layouts().iter().enumerate() {
@@ -298,17 +298,17 @@ impl ChaosEffect {
             let writes = self.get_descriptor_writes(set_index);
 
             let key = self.descriptor_set_key(set_index);
-            let set = self
-                .render_context
-                .get_or_create_descriptor_set(key, set_layout, || writes)
-                .map_err(|e| {
-                    Box::new(ValidationError {
-                        context: "ChaosEffect::bind_descriptor_sets".into(),
-                        problem: format!("set {set_index} for {}: {e:?}", self.name).into(),
-                        ..Default::default()
-                    })
-                })?;
-            cb.bind_descriptor_sets(self.pipeline_bind_point, layout.clone(), set_index, set)?;
+            let sets =
+                [self
+                    .render_context
+                    .get_or_create_descriptor_set(key, set_layout, || writes)?];
+
+            command_buffer.bind_descriptor_sets(
+                self.pipeline_bind_point,
+                layout.as_ref(),
+                set_index,
+                &sets,
+            )?;
         }
 
         Ok(())

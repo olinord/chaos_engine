@@ -1,12 +1,16 @@
 use std::fmt::Display;
 use std::sync::Arc;
 
-use vulkano::ValidationError;
-use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
+use vulkano::buffer::{
+    Buffer, BufferContents, BufferCreateInfo, BufferUsage, IndexBuffer, Subbuffer,
+};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter};
+use vulkano::pipeline::graphics::vertex_input::Vertex;
 
+use crate::rendering::command_buffer::ChaosCommandBuffer;
 use crate::rendering::context::ChaosRenderContext;
+use crate::rendering::errors::ChaosRenderingError;
 
 #[derive(Debug, Clone)]
 pub enum ChaosBufferUsage {
@@ -16,7 +20,6 @@ pub enum ChaosBufferUsage {
     StorageTexelBuffer,
     UniformBuffer,
     StorageBuffer,
-    IndexBuffer,
     VertexBuffer,
     IndirectBuffer,
     DeviceAddress,
@@ -28,8 +31,10 @@ pub enum ChaosBufferUsage {
 
 #[derive(Debug, Clone)]
 pub enum BufferError {
-    ValidationError(Box<ValidationError>),
+    ValidationError(String),
+    RenderingError(ChaosRenderingError),
     BufferNotBound,
+    BufferNotFound(String),
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +51,22 @@ pub struct ChaosBuffer {
     buffer: Option<Arc<Subbuffer<[u8]>>>,
     usage: ChaosBufferUsage,
     memory_type_filter: ChaosBufferMemoryType,
+    length: usize,
+    render_context: Arc<ChaosRenderContext>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChaosVertexBuffer<V: Vertex> {
+    pub name: String,
+    buffer: Option<Arc<Subbuffer<[V]>>>,
+    length: usize,
+    render_context: Arc<ChaosRenderContext>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChaosIndexBuffer {
+    pub name: String,
+    buffer: Option<Arc<IndexBuffer>>,
     length: usize,
     render_context: Arc<ChaosRenderContext>,
 }
@@ -108,31 +129,174 @@ impl ChaosBuffer {
         self.length as u32
     }
 
-    pub fn bind_as_index_buffer(
+    pub fn bind(
         &self,
-        command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        index: u32,
+        command_buffer: &mut ChaosCommandBuffer,
     ) -> Result<(), BufferError> {
         if let Some(buffer) = &self.buffer {
-            let buffer = buffer.as_ref().clone().reinterpret::<[u32]>();
+            let buffer = buffer.as_ref().clone();
             command_buffer
-                .bind_index_buffer(buffer)
-                .map_err(|e| BufferError::ValidationError(e))?;
+                .bind_vertex_buffers(index, &[buffer])
+                .map_err(|e| BufferError::RenderingError(e))?;
+            Ok(())
+        } else {
+            Err(BufferError::BufferNotBound)
+        }
+    }
+}
+
+impl<V: Vertex> ChaosVertexBuffer<V> {
+    pub fn new(name: String, render_context: Arc<ChaosRenderContext>) -> ChaosVertexBuffer<V> {
+        ChaosVertexBuffer {
+            name,
+            buffer: None,
+            length: 0,
+            render_context,
+        }
+    }
+
+    pub fn set_data_from_vec(&mut self, data: Vec<V>) -> Result<(), String> {
+        self.length = data.len();
+
+        let buffer = Buffer::from_iter(
+            self.render_context.memory_allocator(),
+            BufferCreateInfo {
+                usage: BufferUsage::VERTEX_BUFFER | BufferUsage::TRANSFER_DST,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            data.into_iter(),
+        );
+
+        match buffer {
+            Ok(buffer) => {
+                self.buffer = Some(Arc::new(buffer));
+                Ok(())
+            }
+            Err(error) => {
+                self.buffer = None;
+                self.length = 0;
+                Err(format!("{:?}", error))
+            }
+        }
+    }
+
+    pub fn set_data(&mut self, data: V) -> Result<(), String> {
+        self.set_data_from_vec(vec![data])
+    }
+
+    pub fn bind(&self, command_buffer: &mut ChaosCommandBuffer) -> Result<(), BufferError> {
+        if let Some(buffer) = &self.buffer {
+            let buffer = buffer.as_ref().clone();
+            command_buffer
+                .bind_vertex_buffers(0, &[buffer.into_bytes()])
+                .map_err(|e| BufferError::RenderingError(e))?;
             Ok(())
         } else {
             Err(BufferError::BufferNotBound)
         }
     }
 
-    pub fn bind_as_vertex_buffer(
-        &self,
-        index: u32,
-        command_buffer: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-    ) -> Result<(), BufferError> {
+    pub fn buffer(&self) -> Option<Arc<Subbuffer<[V]>>> {
+        self.buffer.clone()
+    }
+
+    pub fn length(&self) -> u32 {
+        self.length as u32
+    }
+
+    pub fn stride(&self) -> u32 {
+        V::per_vertex().stride
+    }
+}
+
+impl ChaosIndexBuffer {
+    pub fn new(name: String, render_context: Arc<ChaosRenderContext>) -> ChaosIndexBuffer {
+        ChaosIndexBuffer {
+            name,
+            buffer: None,
+            length: 0,
+            render_context,
+        }
+    }
+
+    pub fn set_u8(&mut self, data: Vec<u8>) -> Result<(), BufferError> {
+        self.length = data.len();
+
+        let buffer = Buffer::from_iter(
+            self.render_context.memory_allocator(),
+            BufferCreateInfo {
+                usage: BufferUsage::INDEX_BUFFER | BufferUsage::TRANSFER_DST,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            data.into_iter(),
+        )
+        .map_err(|e| BufferError::ValidationError(e.to_string()))?;
+
+        self.buffer = Some(Arc::new(IndexBuffer::from(buffer)));
+        Ok(())
+    }
+
+    pub fn set_u16(&mut self, data: Vec<u16>) -> Result<(), BufferError> {
+        self.length = data.len();
+
+        let buffer = Buffer::from_iter(
+            self.render_context.memory_allocator(),
+            BufferCreateInfo {
+                usage: BufferUsage::INDEX_BUFFER | BufferUsage::TRANSFER_DST,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            data.into_iter(),
+        )
+        .map_err(|e| BufferError::ValidationError(e.to_string()))?;
+
+        self.buffer = Some(Arc::new(IndexBuffer::from(buffer)));
+        Ok(())
+    }
+
+    pub fn set_u32(&mut self, data: Vec<u32>) -> Result<(), BufferError> {
+        self.length = data.len();
+
+        let buffer = Buffer::from_iter(
+            self.render_context.memory_allocator(),
+            BufferCreateInfo {
+                usage: BufferUsage::INDEX_BUFFER | BufferUsage::TRANSFER_DST,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            data.into_iter(),
+        )
+        .map_err(|e| BufferError::ValidationError(e.to_string()))?;
+
+        self.buffer = Some(Arc::new(IndexBuffer::from(buffer)));
+        Ok(())
+    }
+
+    pub fn bind(&self, command_buffer: &mut ChaosCommandBuffer) -> Result<(), BufferError> {
         if let Some(buffer) = &self.buffer {
             let buffer = buffer.as_ref().clone();
             command_buffer
-                .bind_vertex_buffers(index, buffer)
-                .map_err(|e| BufferError::ValidationError(e))?;
+                .bind_index_buffer(&buffer)
+                .map_err(|e| BufferError::RenderingError(e))?;
             Ok(())
         } else {
             Err(BufferError::BufferNotBound)
@@ -149,7 +313,6 @@ impl From<ChaosBufferUsage> for BufferUsage {
             ChaosBufferUsage::StorageTexelBuffer => BufferUsage::STORAGE_TEXEL_BUFFER,
             ChaosBufferUsage::UniformBuffer => BufferUsage::UNIFORM_BUFFER,
             ChaosBufferUsage::StorageBuffer => BufferUsage::STORAGE_BUFFER,
-            ChaosBufferUsage::IndexBuffer => BufferUsage::INDEX_BUFFER,
             ChaosBufferUsage::VertexBuffer => BufferUsage::VERTEX_BUFFER,
             ChaosBufferUsage::IndirectBuffer => BufferUsage::INDIRECT_BUFFER,
             ChaosBufferUsage::DeviceAddress => BufferUsage::SHADER_DEVICE_ADDRESS,
@@ -186,7 +349,9 @@ impl From<ChaosBufferMemoryType> for MemoryTypeFilter {
 impl Display for BufferError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BufferError::ValidationError(e) => write!(f, "Buffer validation error: {:?}", e),
+            BufferError::RenderingError(e) => write!(f, "Rendering error: {:?}", e),
+            BufferError::ValidationError(e) => write!(f, "Buffer validation error: {}", e),
+            BufferError::BufferNotFound(e) => write!(f, "Buffer not found: {}", e),
             BufferError::BufferNotBound => write!(f, "Buffer not bound"),
         }
     }

@@ -6,6 +6,7 @@ pub mod context;
 pub mod draw_command;
 pub mod effect;
 pub mod effect_factory;
+pub mod errors;
 pub mod graph;
 pub mod multi_draw_indirect_buffer;
 pub mod renderer;

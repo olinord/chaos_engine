@@ -11,7 +11,7 @@ use crate::{
     BufferContents, Vertex,
     math::{Vec2, matrix::Mat4},
     rendering::{
-        buffer::{ChaosBuffer, ChaosBufferMemoryType, ChaosBufferUsage},
+        buffer::ChaosVertexBuffer,
         context::ChaosRenderContext,
         draw_command::{ChaosDrawCommand, ChaosDrawQueue, ChaosRenderPhase},
         effect::ChaosEffect,
@@ -256,7 +256,7 @@ pub const DEFAULT_UI_SHADER_ALIAS: &str = "internal_shaders";
 /// per paint list, and text glyphs via a storage-buffer atlas in a second call.
 pub struct VulkanUiBackend {
     effect: Arc<Mutex<ChaosEffect>>,
-    quad_buffer: Arc<Mutex<ChaosBuffer>>,
+    quad_buffer: Arc<Mutex<ChaosVertexBuffer<UiRectVertex>>>,
     instance_count: u32,
     shader_alias: String,
     // text pipeline (optional — only present when enable_text() has been called)
@@ -291,12 +291,7 @@ impl VulkanUiBackend {
             .get_effect::<UiRectVertex>(&usage, ctx)
             .map_err(|e| format!("failed to build ui_rect effect: {e}"))?;
 
-        let mut quad = ChaosBuffer::new(
-            "ui-rect-quad".into(),
-            ChaosBufferUsage::VertexBuffer,
-            ChaosBufferMemoryType::PreferDevice,
-            ctx.clone(),
-        );
+        let mut quad = ChaosVertexBuffer::<UiRectVertex>::new("ui-rect-quad".into(), ctx.clone());
         quad.set_data_from_vec(unit_quad_vertices())?;
 
         Ok(Self {
@@ -461,7 +456,7 @@ impl UiRenderBackend for VulkanUiBackend {
                         .bind_pipeline_graphics(effect_guard.pipeline())
                         .map_err(|_| "failed to bind ui pipeline")?;
                     quad_guard
-                        .bind_as_vertex_buffer(0, command_buffer)
+                        .bind(command_buffer)
                         .map_err(|_| "failed to bind ui quad vertex buffer")?;
                     unsafe {
                         command_buffer
@@ -501,7 +496,7 @@ impl UiRenderBackend for VulkanUiBackend {
                             .bind_pipeline_graphics(effect_guard.pipeline())
                             .map_err(|_| "failed to bind ui text pipeline")?;
                         quad_guard
-                            .bind_as_vertex_buffer(0, command_buffer)
+                            .bind(command_buffer)
                             .map_err(|_| "failed to bind ui text quad vertex buffer")?;
                         unsafe {
                             command_buffer

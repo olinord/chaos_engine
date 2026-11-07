@@ -2,17 +2,12 @@ use log::debug;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use vulkano::{
     Validated, VulkanError, VulkanLibrary,
-    command_buffer::{
-        CommandBufferBeginInfo, CommandBufferExecFuture, CommandBufferLevel, CommandBufferUsage,
-        RecordingCommandBuffer, RenderingAttachmentInfo, RenderingInfo,
-        allocator::StandardCommandBufferAllocator,
-    },
+    command_buffer::allocator::StandardCommandBufferAllocator,
     device::{Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags},
-    format::ClearValue,
+    image::ImageLayout,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::StandardMemoryAllocator,
     pipeline::graphics::viewport::Scissor,
-    render_pass::{AttachmentLoadOp, AttachmentStoreOp},
     swapchain::{self, PresentFuture, Surface, SwapchainAcquireFuture, SwapchainPresentInfo},
     sync::{
         self, GpuFuture,
@@ -22,15 +17,22 @@ use vulkano::{
 use winit::{raw_window_handle::DisplayHandle, window::Window};
 
 use crate::rendering::{
-    adapters::select_physical_device, context::ChaosRenderContext, draw_command::ChaosDrawQueue,
+    adapters::select_physical_device,
+    command_buffer::{
+        ChaosClearValue, ChaosCommandBuffer, ChaosRenderAttachment, ChaosRenderAttachmentLoadOp,
+        ChaosRenderExtent,
+    },
+    context::ChaosRenderContext, draw_command::ChaosDrawQueue,
     swapchain::get_swapchain_and_backbuffers, texture::ChaosTexture,
 };
 
 use crate::frame_zone;
 
-pub type Fence = FenceSignalFuture<
-    PresentFuture<CommandBufferExecFuture<JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture>>>,
->;
+// TODO(step 5): this future chain no longer executes the frame's command buffer
+// (raw command buffers can't go through `then_execute`); replace with explicit
+// semaphores/fences + queue submit/present.
+pub type Fence =
+    FenceSignalFuture<PresentFuture<JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture>>>;
 
 #[allow(unused)]
 pub struct ChaosRenderer {
@@ -170,7 +172,7 @@ impl ChaosRenderer {
         }
     }
 
-    pub fn start_frame(&mut self) -> Option<RecordingCommandBuffer> {
+    pub fn start_frame(&mut self) -> Option<ChaosCommandBuffer> {
         if let Some(extent) = self.pending_resize.take() {
             if let Err(e) = self.recreate_swapchain_now(extent) {
                 log::warn!("Failed to recreate swapchain: {e:?}");
@@ -207,13 +209,14 @@ impl ChaosRenderer {
         self.current_acquire_future = Some(acquire_future);
 
         let backbuffers = self.render_context.backbuffers();
+
         self.begin_rendering(backbuffers[image_i as usize].clone())
     }
 
     pub fn begin_rendering(
         &self,
         destination: Arc<ChaosTexture>,
-    ) -> Option<RecordingCommandBuffer> {
+    ) -> Option<ChaosCommandBuffer> {
         let queue = match self.queue.clone() {
             Some(queue) => queue,
             None => {
@@ -222,29 +225,23 @@ impl ChaosRenderer {
             }
         };
 
-        let command_buffer = RecordingCommandBuffer::new(
+        let mut command_buffer = match ChaosCommandBuffer::new(
             self.command_buffer_allocator.clone(),
             queue.queue_family_index(),
-            CommandBufferLevel::Primary,
-            CommandBufferBeginInfo {
-                usage: CommandBufferUsage::OneTimeSubmit,
-                ..Default::default()
-            },
-        );
-
-        let mut command_buffer = match command_buffer {
+        ) {
             Ok(buffer) => buffer,
             Err(e) => {
-                log::error!("Failed to create a command buffer {}", e);
+                log::error!("Failed to create a command buffer {:?}", e);
                 return None;
             }
         };
 
-        let mut color_attachment =
-            RenderingAttachmentInfo::image_view(destination.image_view().clone());
-        color_attachment.load_op = AttachmentLoadOp::Clear;
-        color_attachment.store_op = AttachmentStoreOp::Store;
-        color_attachment.clear_value = Some(ClearValue::Float([0.0, 0.0, 0.0, 1.0]));
+        let color_attachment = Arc::new(ChaosRenderAttachment::new(
+            destination,
+            ChaosRenderAttachmentLoadOp::Clear(ChaosClearValue::Float([0.0, 0.0, 0.0, 1.0])),
+            ImageLayout::ColorAttachmentOptimal,
+            true,
+        ));
 
         let viewport_extent = self.render_context.viewport().extent;
         // Framebuffer-space extent is always positive; the viewport uses a
@@ -254,46 +251,58 @@ impl ChaosRenderer {
             viewport_extent[0].abs() as u32,
             viewport_extent[1].abs() as u32,
         ];
-        let rendering_info = RenderingInfo {
-            render_area_extent: fb_extent,
-            // Raw command buffers don't auto-fill this; must be >= 1.
-            layer_count: 1,
-            color_attachments: vec![Some(color_attachment)],
-            ..Default::default()
-        };
-
         // Push the current viewport/scissor to the command buffer so pipelines
         // built with dynamic viewport state (see `EffectFactory`) pick up the
         // current window size after a resize.
-        let viewport = [self.render_context.viewport(); 1];
-        let scissor = [Scissor {
-            offset: [0, 0],
-            extent: fb_extent,
-        }; 1];
-
-        unsafe {
-            command_buffer.begin_rendering(&rendering_info).unwrap();
-            command_buffer.set_viewport(0, &viewport).unwrap();
-            command_buffer.set_scissor(0, &scissor).unwrap();
+        let result = command_buffer
+            .begin_rendering(
+                &[Some(color_attachment)],
+                None,
+                None,
+                Some(ChaosRenderExtent {
+                    size: fb_extent,
+                    offset: None,
+                }),
+            )
+            .and_then(|cb| cb.set_viewport(self.render_context.viewport()))
+            .and_then(|cb| {
+                cb.set_scissor(Scissor {
+                    offset: [0, 0],
+                    extent: fb_extent,
+                })
+            });
+        if let Err(e) = result {
+            log::error!("Failed to begin rendering: {:?}", e);
+            return None;
         }
         Some(command_buffer)
     }
 
-    pub fn render(&self, draw_queue: ChaosDrawQueue, command_buffer: &mut RecordingCommandBuffer) {
+    pub fn render(&self, draw_queue: ChaosDrawQueue, command_buffer: &mut ChaosCommandBuffer) {
         // sort the draw queue by sort key, then execute each draw function in order
         let mut draw_queue = draw_queue;
         draw_queue
             .sort_by_key(|draw_command| (draw_command.render_phase, draw_command.effect_hash));
         for draw_command in draw_queue {
             frame_zone!("render draw command");
-            (draw_command.draw_function)(buffer_builder).unwrap();
+            (draw_command.draw_function)(command_buffer).unwrap();
         }
     }
 
-    pub fn end_frame(&mut self, command_buffer: &RecordingCommandBuffer) {
-        unsafe {
-            command_buffer.end();
+    pub fn end_frame(&mut self, mut command_buffer: ChaosCommandBuffer) {
+        if let Err(e) = command_buffer.end_rendering() {
+            log::error!("Failed to end rendering: {:?}", e);
         }
+        // TODO(step 5): submit `finished_frame.cmd_buffer` and keep `finished_frame`
+        // alive until this frame's fence signals. Until then the recorded work is
+        // dropped here and never reaches the GPU.
+        let _finished_frame = match command_buffer.finish() {
+            Ok(frame) => Some(frame),
+            Err(e) => {
+                log::error!("Failed to finish command buffer: {:?}", e);
+                None
+            }
+        };
 
         let image_i = self.current_buffer;
         let acquire_future = self
@@ -315,8 +324,6 @@ impl ChaosRenderer {
 
         let future = previous_future
             .join(acquire_future)
-            .then_execute(self.queue.clone().unwrap(), command_buffer)
-            .unwrap()
             .then_swapchain_present(
                 self.queue.clone().unwrap(),
                 SwapchainPresentInfo::swapchain_image_index(

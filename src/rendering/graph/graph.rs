@@ -3,15 +3,13 @@ use std::sync::Arc;
 
 use vulkano::{
     Validated, ValidationError, VulkanError,
-    command_buffer::{
-        CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, RecordingCommandBuffer,
-        RenderingInfo,
-        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-    },
+    command_buffer::RenderingInfo,
     image::ImageLayout,
     sync::{AccessFlags, BufferMemoryBarrier, DependencyInfo, ImageMemoryBarrier, PipelineStages},
 };
 
+use crate::rendering::command_buffer::{ChaosCommandBuffer, ChaosRenderExtent};
+use crate::rendering::errors::ChaosRenderingError;
 use crate::rendering::graph::resource::ResourceDescription;
 use crate::rendering::{
     context::ChaosRenderContext,
@@ -65,6 +63,13 @@ pub enum GraphError {
     NodeResourceNotFound {
         resource_name: String,
     },
+    CommandBufferEror(String),
+}
+
+impl From<ChaosRenderingError> for GraphError {
+    fn from(value: ChaosRenderingError) -> Self {
+        GraphError::CommandBufferEror(format!("Command buffer error: {:?}", value))
+    }
 }
 
 impl From<Validated<VulkanError>> for GraphError {
@@ -119,13 +124,12 @@ impl NodeResources {
     }
 }
 
-#[derive(Debug)]
 pub struct GraphContext<'a> {
     pub render_size: [u32; 2],
     pub display_size: [u32; 2],
     pub inputs: NodeResources,
     pub node_resources: NodeResources,
-    pub command_buffer: &'a mut RecordingCommandBuffer,
+    pub command_buffer: &'a mut ChaosCommandBuffer,
 }
 
 impl GraphContext<'_> {
@@ -158,7 +162,6 @@ pub struct Graph {
     sort_jobs: bool,
     recreate_resources: bool,
     render_context: Option<Arc<ChaosRenderContext>>,
-    command_buffer_allocator: Option<Arc<StandardCommandBufferAllocator>>,
     render_size: [u32; 2],
     display_size: [u32; 2],
     render_size_changed: bool,
@@ -179,7 +182,6 @@ impl Graph {
             sort_jobs: true,
             recreate_resources: true,
             render_context: None,
-            command_buffer_allocator: None,
             render_size,
             display_size: render_size,
             render_size_changed: true,
@@ -190,7 +192,7 @@ impl Graph {
     fn graph_context<'a>(
         &self,
         node_id: GraphNodeId,
-        command_buffer: &'a mut RecordingCommandBuffer,
+        command_buffer: &'a mut ChaosCommandBuffer,
         inputs: &[(String, ResourceId)],
         resources: &[(String, ResourceId)],
     ) -> Result<GraphContext<'a>, GraphError> {
@@ -226,11 +228,6 @@ impl Graph {
 
     pub fn initialize(&mut self, render_context: Arc<ChaosRenderContext>) {
         self.render_context = Some(render_context);
-
-        self.command_buffer_allocator = Some(Arc::new(StandardCommandBufferAllocator::new(
-            self.render_context.as_ref().unwrap().device().clone(),
-            StandardCommandBufferAllocatorCreateInfo::default(),
-        )));
     }
 
     pub fn set_render_size(&mut self, render_size: [u32; 2]) {
@@ -461,6 +458,7 @@ impl Graph {
     pub fn render(
         &mut self,
         destination: &Arc<ChaosTexture>,
+        command_buffer: &mut ChaosCommandBuffer,
         render_context: &Arc<ChaosRenderContext>,
     ) -> Result<(), GraphError> {
         // important to create resources before jobs
@@ -511,20 +509,6 @@ impl Graph {
             self.sort()?;
         }
 
-        if self.command_buffer_allocator.is_none() {
-            self.initialize(render_context.clone());
-        }
-
-        let mut command_buffer = RecordingCommandBuffer::new(
-            self.command_buffer_allocator.as_ref().unwrap().clone(),
-            render_context.graphic_family_index(),
-            CommandBufferLevel::Primary,
-            CommandBufferBeginInfo {
-                usage: CommandBufferUsage::OneTimeSubmit,
-                ..Default::default()
-            },
-        )?;
-
         for level in &self.jobs {
             for job in level {
                 match job {
@@ -536,13 +520,13 @@ impl Graph {
                         *resource_id,
                         &mut self.layouts,
                         &self.resources,
-                        &mut command_buffer,
+                        command_buffer,
                     )?,
                     Job::BufferBarrierJob { resource_id, usage } => Self::add_buffer_barrier(
                         usage,
                         *resource_id,
                         &self.resources,
-                        &mut command_buffer,
+                        command_buffer,
                     )?,
                     Job::NodeExecutionJob {
                         graph_node_id,
@@ -552,7 +536,7 @@ impl Graph {
                         if let Some(node) = self.nodes.get(graph_node_id) {
                             self.execute_node(
                                 destination,
-                                &mut command_buffer,
+                                command_buffer,
                                 graph_node_id,
                                 node,
                                 inputs,
@@ -570,28 +554,30 @@ impl Graph {
     fn execute_node(
         &self,
         _destination: &Arc<ChaosTexture>,
-        command_buffer: &mut RecordingCommandBuffer,
+        command_buffer: &mut ChaosCommandBuffer,
         graph_node_id: &usize,
         node: &Arc<GraphNode>,
         inputs: &[(String, ResourceId)],
         outputs: &[(String, ResourceId)],
     ) -> Result<(), GraphError> {
-        let rendering_info = RenderingInfo {
-            // Fill in the necessary fields for the render pass begin info
-            ..Default::default()
-        };
-        unsafe {
-            command_buffer.begin_rendering(&rendering_info)?;
-        };
+        // nothing will render for now, which is fine until we hook things up for realz
+        let destinations = [];
+        command_buffer.begin_rendering(
+            &destinations,
+            None,
+            None,
+            Some(ChaosRenderExtent {
+                size: [800, 600],
+                offset: None,
+            }),
+        )?;
 
         // the context holds the command buffer borrow, so it is created after begin_rendering
         // and consumed by execute before end_rendering
         let graph_context = self.graph_context(*graph_node_id, command_buffer, inputs, outputs)?;
         node.node_type.execute(graph_context)?;
 
-        unsafe {
-            command_buffer.end_rendering()?;
-        }
+        command_buffer.end_rendering()?;
         Ok(())
     }
 
@@ -600,7 +586,7 @@ impl Graph {
         resource_id: ResourceId,
         layouts: &mut HashMap<ResourceId, ImageLayout>,
         resources: &HashMap<ResourceId, Arc<ResourceHandle>>,
-        command_buffer: &mut RecordingCommandBuffer,
+        command_buffer: &mut ChaosCommandBuffer,
     ) -> Result<(), GraphError> {
         let old_layout = match layouts.get(&resource_id) {
             Some(layout) => layout.clone(),
@@ -647,12 +633,14 @@ impl Graph {
                     barrier.new_layout = new_layout;
                     // covers every mip level, array layer and the aspects of the image's format
                     barrier.subresource_range = image.subresource_range();
-                    unsafe {
-                        command_buffer.pipeline_barrier(&DependencyInfo {
-                            image_memory_barriers: vec![barrier].into(),
-                            ..Default::default()
-                        })?;
-                    }
+
+                    // keep the image alive until the command buffer is submitted, otherwise it might get dropped before the barrier is executed
+                    command_buffer.keep(image.clone());
+
+                    command_buffer.pipeline_barrier(&DependencyInfo {
+                        image_memory_barriers: vec![barrier].into(),
+                        ..Default::default()
+                    })?;
                     layouts.insert(resource_id, new_layout);
                     Ok(())
                 }
@@ -670,7 +658,7 @@ impl Graph {
         usage: &BufferUsage,
         resource_id: ResourceId,
         resources: &HashMap<ResourceId, Arc<ResourceHandle>>,
-        command_buffer: &mut RecordingCommandBuffer,
+        command_buffer: &mut ChaosCommandBuffer,
     ) -> Result<(), GraphError> {
         let resource = resources
             .get(&resource_id)
@@ -703,12 +691,14 @@ impl Graph {
             }
         };
         barrier.range = subbuffer.offset()..subbuffer.offset() + subbuffer.size();
-        unsafe {
-            command_buffer.pipeline_barrier(&DependencyInfo {
-                buffer_memory_barriers: vec![barrier].into(),
-                ..Default::default()
-            })?;
-        }
+
+        // keep the buffer alive until the command buffer is submitted, otherwise it might get dropped before the barrier is executed
+        command_buffer.keep(subbuffer.buffer().clone());
+        command_buffer.pipeline_barrier(&DependencyInfo {
+            buffer_memory_barriers: vec![barrier].into(),
+            ..Default::default()
+        })?;
+
         Ok(())
     }
 

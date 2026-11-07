@@ -22,28 +22,8 @@ use vulkano::{
     pipeline::{PipelineBindPoint, PipelineLayout, graphics::viewport::Scissor},
 };
 
-use crate::rendering::command_buffer::ChaosCommandBufferError::CreationError;
+use crate::rendering::errors::ChaosRenderingError;
 use crate::rendering::texture::ChaosTexture;
-
-pub enum ChaosCommandBufferError {
-    CreationError(String),
-    BeginRenderingError(String),
-    EndRenderingError(String),
-    EndError(String),
-    PipelineBarrierError(String),
-    BindGraphicPipelineError(String),
-    BindComputePipelineError(String),
-    BindDescriptorSetError(String),
-    PushConstantError(String),
-    BindVertexBuffers(String),
-    BindIndexBuffers(String),
-    DrawError(String),
-    DrawIndexedError(String),
-    DrawIndexedIndirectError(String),
-    DispatchError(String),
-    ViewportError(String),
-    ScissorError(String),
-}
 
 pub struct ChaosCommandBuffer {
     cmd_buffer: RecordingCommandBuffer,
@@ -142,7 +122,7 @@ impl ChaosCommandBuffer {
     pub(crate) fn new(
         buffer_allocator: Arc<StandardCommandBufferAllocator>,
         family_index: u32,
-    ) -> Result<Self, ChaosCommandBufferError> {
+    ) -> Result<Self, ChaosRenderingError> {
         let level = CommandBufferLevel::Primary;
         let begin_info = CommandBufferBeginInfo {
             usage: CommandBufferUsage::OneTimeSubmit,
@@ -156,17 +136,19 @@ impl ChaosCommandBuffer {
                 inside_rendering: false,
                 keep_alive: vec![],
             }),
-            Err(e) => Err(CreationError(format!("{}", e))),
+            Err(e) => Err(ChaosRenderingError::ChaosCommandBufferCreationError(
+                format!("{}", e),
+            )),
         }
     }
 
     //  Ends recording. It takes self by value, because ending a recording consumes it. It returns the executable buffer plus the keep-alive list as one unit.
-    pub(crate) fn finish(self) -> Result<FinishedFrame, ChaosCommandBufferError> {
+    pub(crate) fn finish(self) -> Result<FinishedFrame, ChaosRenderingError> {
         debug_assert!(!self.inside_rendering);
         let finished_command_buffer = unsafe {
             self.cmd_buffer
                 .end()
-                .map_err(|e| ChaosCommandBufferError::EndError(e.to_string()))
+                .map_err(|e| ChaosRenderingError::ChaosCommandBufferEndError(e.to_string()))
         }?;
 
         Ok(FinishedFrame {
@@ -184,7 +166,7 @@ impl ChaosCommandBuffer {
         depth_attachment: Option<Arc<ChaosRenderAttachment>>,
         stencil_attachment: Option<Arc<ChaosRenderAttachment>>,
         extents: Option<ChaosRenderExtent>,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         let render_area = match &extents {
             Some(extent) => extent.size,
             None => {
@@ -195,7 +177,7 @@ impl ChaosCommandBuffer {
                     .or(stencil_attachment.as_ref())
                     .or_else(|| color_attachments.iter().find_map(|a| a.as_ref()))
                     .ok_or_else(|| {
-                        ChaosCommandBufferError::BeginRenderingError(
+                        ChaosRenderingError::ChaosCommandBufferBeginRenderingError(
                             "No attachments provided to begin_rendering".to_string(),
                         )
                     })?;
@@ -227,7 +209,9 @@ impl ChaosCommandBuffer {
         unsafe {
             self.cmd_buffer
                 .begin_rendering(&rendering_info)
-                .map_err(|e| ChaosCommandBufferError::BeginRenderingError(e.to_string()))?;
+                .map_err(|e| {
+                    ChaosRenderingError::ChaosCommandBufferBeginRenderingError(e.to_string())
+                })?;
         }
 
         let attachments: Vec<Arc<ChaosTexture>> = color_attachments
@@ -248,11 +232,11 @@ impl ChaosCommandBuffer {
     }
 
     /// Closes the scope and clears the flag.
-    pub(crate) fn end_rendering(&mut self) -> Result<&mut Self, ChaosCommandBufferError> {
+    pub(crate) fn end_rendering(&mut self) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
-            self.cmd_buffer
-                .end_rendering()
-                .map_err(|e| ChaosCommandBufferError::EndRenderingError(e.to_string()))?;
+            self.cmd_buffer.end_rendering().map_err(|e| {
+                ChaosRenderingError::ChaosCommandBufferEndRenderingError(e.to_string())
+            })?;
         }
         self.inside_rendering = false;
         Ok(self)
@@ -262,11 +246,11 @@ impl ChaosCommandBuffer {
     pub(crate) fn pipeline_barrier(
         &mut self,
         dependency_info: &DependencyInfo,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .pipeline_barrier(dependency_info)
-                .map_err(|e| ChaosCommandBufferError::PipelineBarrierError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::PipelineBarrierError(e.to_string()))?;
         }
 
         Ok(self)
@@ -299,11 +283,11 @@ impl ChaosCommandBuffer {
     pub fn bind_pipeline_graphics(
         &mut self,
         pipeline: Arc<GraphicsPipeline>,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .bind_pipeline_graphics(&pipeline)
-                .map_err(|e| ChaosCommandBufferError::BindGraphicPipelineError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::BindGraphicPipelineError(e.to_string()))?;
         }
         self.keep(pipeline);
         Ok(self)
@@ -313,11 +297,11 @@ impl ChaosCommandBuffer {
     pub fn bind_pipeline_compute(
         &mut self,
         pipeline: Arc<ComputePipeline>,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .bind_pipeline_compute(&pipeline)
-                .map_err(|e| ChaosCommandBufferError::BindComputePipelineError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::BindComputePipelineError(e.to_string()))?;
         }
         self.keep(pipeline);
         Ok(self)
@@ -330,12 +314,12 @@ impl ChaosCommandBuffer {
         layout: &PipelineLayout,
         first_set: u32,
         sets: &[Arc<DescriptorSet>],
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             let raw_sets: Vec<&RawDescriptorSet> = sets.iter().map(|s| s.as_raw()).collect();
             self.cmd_buffer
                 .bind_descriptor_sets(pipeline_bind_point, layout, first_set, &raw_sets, &[])
-                .map_err(|e| ChaosCommandBufferError::BindDescriptorSetError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::BindDescriptorSetError(e.to_string()))?;
         }
 
         self.keep_all(sets);
@@ -348,11 +332,11 @@ impl ChaosCommandBuffer {
         layout: &PipelineLayout,
         first_set: u32,
         set: Arc<DescriptorSet>,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .bind_descriptor_sets(pipeline_bind_point, layout, first_set, &[set.as_raw()], &[])
-                .map_err(|e| ChaosCommandBufferError::BindDescriptorSetError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::BindDescriptorSetError(e.to_string()))?;
         }
 
         self.keep(set);
@@ -366,7 +350,7 @@ impl ChaosCommandBuffer {
         first_set: u32,
         set: Arc<DescriptorSet>,
         offset: u32,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .bind_descriptor_sets(
@@ -376,7 +360,7 @@ impl ChaosCommandBuffer {
                     &[set.as_raw()],
                     &[offset],
                 )
-                .map_err(|e| ChaosCommandBufferError::BindDescriptorSetError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::BindDescriptorSetError(e.to_string()))?;
         }
 
         self.keep(set);
@@ -390,12 +374,12 @@ impl ChaosCommandBuffer {
         first_set: u32,
         sets: &[Arc<DescriptorSet>],
         offsets: &[u32],
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             let raw_sets: Vec<&RawDescriptorSet> = sets.iter().map(|s| s.as_raw()).collect();
             self.cmd_buffer
                 .bind_descriptor_sets(pipeline_bind_point, layout, first_set, &raw_sets, offsets)
-                .map_err(|e| ChaosCommandBufferError::BindDescriptorSetError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::BindDescriptorSetError(e.to_string()))?;
         }
         self.keep_all(sets);
         Ok(self)
@@ -407,11 +391,11 @@ impl ChaosCommandBuffer {
         layout: Arc<PipelineLayout>,
         offset: u32,
         data: T,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .push_constants(&layout, offset, &data)
-                .map_err(|e| ChaosCommandBufferError::PushConstantError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::PushConstantError(e.to_string()))?;
         }
 
         Ok(self)
@@ -421,11 +405,11 @@ impl ChaosCommandBuffer {
         &mut self,
         first_binding: u32,
         buffers: &[Subbuffer<[u8]>],
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .bind_vertex_buffers(first_binding, buffers)
-                .map_err(|e| ChaosCommandBufferError::BindVertexBuffers(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::BindVertexBuffers(e.to_string()))?;
         }
         self.keep_all_buffers(buffers);
         Ok(self)
@@ -434,11 +418,11 @@ impl ChaosCommandBuffer {
     pub fn bind_index_buffer(
         &mut self,
         buffer: &IndexBuffer,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .bind_index_buffer(buffer)
-                .map_err(|e| ChaosCommandBufferError::BindIndexBuffers(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::BindIndexBuffers(e.to_string()))?;
         }
 
         self.keep_buffer(buffer.as_bytes());
@@ -452,11 +436,11 @@ impl ChaosCommandBuffer {
         instance_count: u32,
         first_vertex: u32,
         first_instance: u32,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .draw(vertex_count, instance_count, first_vertex, first_instance)
-                .map_err(|e| ChaosCommandBufferError::DrawError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::ChaosCommandBufferDrawError(e.to_string()))?;
         }
 
         Ok(self)
@@ -469,7 +453,7 @@ impl ChaosCommandBuffer {
         first_index: u32,
         vertex_offset: i32,
         first_instance: u32,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .draw_indexed(
@@ -479,7 +463,9 @@ impl ChaosCommandBuffer {
                     vertex_offset,
                     first_instance,
                 )
-                .map_err(|e| ChaosCommandBufferError::DrawIndexedError(e.to_string()))?;
+                .map_err(|e| {
+                    ChaosRenderingError::ChaosCommandBufferDrawIndexedError(e.to_string())
+                })?;
         }
 
         Ok(self)
@@ -490,11 +476,13 @@ impl ChaosCommandBuffer {
         indirect_buffer: &Subbuffer<[DrawIndexedIndirectCommand]>,
         draw_count: u32,
         stride: u32,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .draw_indexed_indirect(indirect_buffer, draw_count, stride)
-                .map_err(|e| ChaosCommandBufferError::DrawIndexedIndirectError(e.to_string()))?;
+                .map_err(|e| {
+                    ChaosRenderingError::ChaosCommandBufferDrawIndexedIndirectError(e.to_string())
+                })?;
         }
         self.keep_buffer(indirect_buffer.as_bytes());
         Ok(self)
@@ -506,20 +494,17 @@ impl ChaosCommandBuffer {
         group_x_count: u32,
         group_y_count: u32,
         group_z_count: u32,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .dispatch([group_x_count, group_y_count, group_z_count])
-                .map_err(|e| ChaosCommandBufferError::DispatchError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::ChaosCommandBufferDispatchError(e.to_string()))?;
         }
         Ok(self)
     }
 
     /// Only needed if a node renders a sub-region. Otherwise the graph handles them in begin_rendering.
-    pub fn set_viewport(
-        &mut self,
-        viewport: Viewport,
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    pub fn set_viewport(&mut self, viewport: Viewport) -> Result<&mut Self, ChaosRenderingError> {
         let viewports = [viewport];
         self.set_viewports(0, &viewports)
     }
@@ -528,16 +513,16 @@ impl ChaosCommandBuffer {
         &mut self,
         first_viewport: u32,
         viewports: &[Viewport],
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .set_viewport(first_viewport, viewports)
-                .map_err(|e| ChaosCommandBufferError::ViewportError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::ViewportError(e.to_string()))?;
         }
         Ok(self)
     }
 
-    pub fn set_scissor(&mut self, scissor: Scissor) -> Result<&mut Self, ChaosCommandBufferError> {
+    pub fn set_scissor(&mut self, scissor: Scissor) -> Result<&mut Self, ChaosRenderingError> {
         let scissors = [scissor];
         self.set_scissors(0, &scissors)
     }
@@ -546,11 +531,11 @@ impl ChaosCommandBuffer {
         &mut self,
         first_scissor: u32,
         scissors: &[Scissor],
-    ) -> Result<&mut Self, ChaosCommandBufferError> {
+    ) -> Result<&mut Self, ChaosRenderingError> {
         unsafe {
             self.cmd_buffer
                 .set_scissor(first_scissor, scissors)
-                .map_err(|e| ChaosCommandBufferError::ScissorError(e.to_string()))?;
+                .map_err(|e| ChaosRenderingError::ScissorError(e.to_string()))?;
         }
         Ok(self)
     }
