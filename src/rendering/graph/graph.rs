@@ -627,6 +627,7 @@ impl Graph {
                                 || *dim == TextureSizeType::PercentageOfRenderHeight
                         })
                     }
+                    #[cfg(test)]
                     _ => false,
                 };
 
@@ -637,6 +638,7 @@ impl Graph {
                                 || *dim == TextureSizeType::PercentageOfDisplayHeight
                         })
                     }
+                    #[cfg(test)]
                     _ => false,
                 };
 

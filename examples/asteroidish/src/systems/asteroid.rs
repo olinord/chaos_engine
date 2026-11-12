@@ -135,7 +135,7 @@ impl ChaosSystem for AsteroidSystem {
     fn initialize(&mut self, world: &mut ChaosWorld) -> Result<(), &'static str> {
         let mut spheres: Vec<Vec3> = vec![Vec3::new(0.0, 0.0, 2.5)]; // Start with a sphere at the origin with radius 1.0
         let mut count = 0 as usize;
-        while count < 10000 {
+        while count < 100 {
             let pos = Vec2::new(random_range(-100.0..100.0), random_range(-100.0..100.0));
             let radius = random_range(0.1..1.0);
 

@@ -135,14 +135,14 @@ impl ChaosEngine {
         };
 
         // `None` means the swapchain is being recreated; skip this frame.
-        let Some(mut buffer_builder) = rendering_system.start_frame()? else {
+        let Some(mut buffer) = rendering_system.start_frame()? else {
             return Ok(());
         };
 
         let draw_queue = self.world.get_draw_queue(rendering_system.render_context());
 
-        rendering_system.render(draw_queue, &mut buffer_builder);
-        rendering_system.end_frame(buffer_builder)?;
+        rendering_system.render(draw_queue, &mut buffer);
+        rendering_system.end_frame(buffer)?;
         Ok(())
     }
 }

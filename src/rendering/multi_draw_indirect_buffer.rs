@@ -164,8 +164,11 @@ impl<V: Vertex + Clone> ChaosMultiDrawIndirectBuffer<V> {
                 .ok_or_else(|| RenderError::BufferNotUploaded {
                     name: self.indirect_buffer.name.clone(),
                 })?;
-
-        command_buffer.draw_indexed_indirect(&indirect_subbuffer, 1, self.vertex_buffer.stride());
+        command_buffer.draw_indexed_indirect(
+            &indirect_subbuffer,
+            self.commands.len(),
+            size_of::<DrawIndexedIndirectCommand>() as u32,
+        );
         Ok(())
     }
 }

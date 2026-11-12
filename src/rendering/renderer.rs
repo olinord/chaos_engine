@@ -1,3 +1,4 @@
+use ash::vk;
 use log::debug;
 use std::{
     collections::{HashMap, HashSet},
@@ -5,50 +6,89 @@ use std::{
     sync::Arc,
 };
 use vulkano::{
-    VulkanLibrary,
+    VulkanError, VulkanLibrary, VulkanObject,
     command_buffer::allocator::StandardCommandBufferAllocator,
     device::{Device, DeviceCreateInfo, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags},
     image::ImageLayout,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::StandardMemoryAllocator,
     pipeline::graphics::viewport::Scissor,
-    swapchain::{self, PresentFuture, Surface, SwapchainAcquireFuture, SwapchainPresentInfo},
+    swapchain::{
+        AcquireNextImageInfo, PresentInfo, SemaphorePresentInfo, Surface, SwapchainPresentInfo,
+    },
     sync::{
-        self, GpuFuture,
-        future::{FenceSignalFuture, JoinFuture},
+        AccessFlags, DependencyInfo, ImageMemoryBarrier, PipelineStages,
+        fence::{Fence, FenceCreateFlags, FenceCreateInfo},
+        semaphore::{Semaphore, SemaphoreCreateInfo},
     },
 };
 use winit::{raw_window_handle::DisplayHandle, window::Window};
 
-use crate::rendering::{
-    adapters::select_physical_device,
-    command_buffer::{
-        ChaosClearValue, ChaosCommandBuffer, ChaosRenderAttachment, ChaosRenderAttachmentLoadOp,
-        ChaosRenderExtent,
+use crate::{
+    frame_zone,
+    rendering::{
+        adapters::select_physical_device,
+        command_buffer::{
+            ChaosClearValue, ChaosCommandBuffer, ChaosRenderAttachment,
+            ChaosRenderAttachmentLoadOp, ChaosRenderExtent, FinishedFrame,
+        },
+        context::ChaosRenderContext,
+        draw_command::ChaosDrawQueue,
+        errors::{RenderError, RenderResultExt},
+        swapchain::get_swapchain_and_backbuffers,
+        texture::ChaosTexture,
     },
-    context::ChaosRenderContext,
-    draw_command::ChaosDrawQueue,
-    errors::{RenderError, RenderResultExt},
-    swapchain::get_swapchain_and_backbuffers,
-    texture::ChaosTexture,
 };
 
-use crate::frame_zone;
+const FRAMES_IN_FLIGHT: usize = 3;
 
-// TODO(step 5): this future chain no longer executes the frame's command buffer
-// (raw command buffers can't go through `then_execute`); replace with explicit
-// semaphores/fences + queue submit/present.
-pub type Fence =
-    FenceSignalFuture<PresentFuture<JoinFuture<Box<dyn GpuFuture>, SwapchainAcquireFuture>>>;
+/// FrameSlot holds the resources for a single frame in flight, including the finished frame, fence, and image available semaphore.
+/// It is stored in a FRAMES_IN_FLIGHT-sized array in ChaosRenderer, and is indexed by current_frame % FRAMES_IN_FLIGHT.
+/// Before a frame is started we wait for the fence to signal and clear the finished frame. The fence is reset right
+/// before the submit, and after the submit the finished frame is stored in the slot until the fence signals again.
+///
+/// Deliberately not `Clone`: cloning would share the same fence/semaphore between slots.
+pub struct FrameSlot {
+    pub fence: Arc<Fence>,
+    pub image_available: Arc<Semaphore>,
+    pub finished_frame: Option<FinishedFrame>,
+}
 
+impl FrameSlot {
+    fn new(device: Arc<Device>) -> Result<Self, RenderError> {
+        // create a fence that is initially signaled, so the first frame can start without waiting
+        // create a semaphore for the image available signal
+        // create a finished frame that is None, since we haven't submitted anything yet
+        Ok(Self {
+            fence: Arc::new(
+                Fence::new(
+                    device.clone(),
+                    FenceCreateInfo {
+                        flags: FenceCreateFlags::SIGNALED,
+                        ..Default::default()
+                    },
+                )
+                .context("creating a frame slot fence")?,
+            ),
+            image_available: Arc::new(
+                Semaphore::new(device.clone(), SemaphoreCreateInfo::default())
+                    .context("creating a frame slot image available semaphore")?,
+            ),
+            finished_frame: None,
+        })
+    }
+}
+
+/// ChaosRenderer is the main rendering system. It manages the swapchain, command buffers, and frames in flight.
+/// It is responsible for starting and ending frames, submitting command buffers, and handling swapchain recreation.
 #[allow(unused)]
 pub struct ChaosRenderer {
     render_context: Arc<ChaosRenderContext>,
     queue: Arc<Queue>,
-    current_frame: u128,
-    current_buffer: u32,
-    current_acquire_future: Option<SwapchainAcquireFuture>,
-    fences: Vec<Option<Fence>>,
+    current_frame: usize,
+    current_image_index: u32, // the swapchain image index
+    frames: [FrameSlot; FRAMES_IN_FLIGHT],
+    render_finished: Vec<Arc<Semaphore>>, // Semaphores to signal when rendering is finished for each frame, indexed by current_image_index
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     directories: HashMap<PathBuf, PathBuf>,
     pending_resize: Option<[u32; 2]>,
@@ -140,12 +180,19 @@ impl ChaosRenderer {
             [inner_size.width, inner_size.height],
         )?;
 
+        let mut render_finished = Vec::new();
+        for _ in backbuffers.iter() {
+            // create a semaphore for each backbuffer to signal when rendering is finished
+            render_finished.push(Arc::new(
+                Semaphore::new(device.clone(), SemaphoreCreateInfo::default())
+                    .context("creating a render finished semaphore")?,
+            ));
+        }
+
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
             device.clone(),
             Default::default(),
         ));
-
-        let fences: Vec<Option<Fence>> = (0..3).map(|_| None).collect();
 
         let render_context = Arc::new(ChaosRenderContext::new(
             physical_device.clone(),
@@ -158,13 +205,20 @@ impl ChaosRenderer {
             0.0,
         ));
 
+        // Each slot needs its own fence and semaphore, so create them separately.
+        let frames = [
+            FrameSlot::new(device.clone())?,
+            FrameSlot::new(device.clone())?,
+            FrameSlot::new(device)?,
+        ];
+
         Ok(ChaosRenderer {
             render_context: render_context.clone(),
             queue,
             current_frame: 0,
-            current_buffer: 0,
-            current_acquire_future: None,
-            fences,
+            current_image_index: 0,
+            frames,
+            render_finished,
             command_buffer_allocator,
             directories: directories.clone(),
             pending_resize: None,
@@ -189,49 +243,76 @@ impl ChaosRenderer {
             }
         }
 
-        let (image_i, suboptimal, acquire_future) =
-            match swapchain::acquire_next_image(self.render_context.swapchain(), None)
+        let frame = &mut self.frames[self.current_frame % FRAMES_IN_FLIGHT];
+        frame
+            .fence
+            .wait(None)
+            .context("wait for last finished frame to complete")?;
+        frame.finished_frame = None; // drop the previous finished frame so its resources can be freed
+
+        self.current_image_index = unsafe {
+            // aquire the next image
+            let acquire_info = AcquireNextImageInfo {
+                timeout: None,
+                semaphore: Some(frame.image_available.clone()),
+                fence: None,
+                ..Default::default()
+            };
+            match self
+                .render_context
+                .swapchain()
+                .acquire_next_image(&acquire_info)
                 .context("acquire next swapchain image")
             {
-                Ok(r) => r,
+                Ok(acquired_info) => {
+                    if acquired_info.is_suboptimal {
+                        // Still usable this frame, but recreate before the next one.
+                        self.pending_resize = Some(self.render_context.swapchain().image_extent());
+                    }
+                    acquired_info.image_index
+                }
                 Err(RenderError::SwapchainOutOfDate) => {
                     self.pending_resize = Some(self.render_context.swapchain().image_extent());
                     return Ok(None);
                 }
                 Err(e) => return Err(e),
-            };
-
-        if suboptimal {
-            // Render this frame anyway, but recreate the swapchain before the next one.
-            self.pending_resize = Some(self.render_context.swapchain().image_extent());
-        }
-
-        if let Some(image_fence) = &self.fences[image_i as usize] {
-            image_fence
-                .wait(None)
-                .context("wait for previous frame on this image")?;
-        }
+            }
+        };
 
         // clear the last frame's descriptor set cache
         self.render_context.clear_descriptor_set_cache();
 
-        self.current_buffer = image_i;
-        self.current_acquire_future = Some(acquire_future);
-
         let backbuffers = self.render_context.backbuffers();
 
-        self.begin_rendering(backbuffers[image_i as usize].clone())
-            .map(Some)
+        let image = backbuffers[self.current_image_index as usize].clone();
+
+        self.begin_rendering(image).map(Some)
     }
 
     pub fn begin_rendering(
-        &self,
+        &mut self,
         destination: Arc<ChaosTexture>,
     ) -> Result<ChaosCommandBuffer, RenderError> {
         let mut command_buffer = ChaosCommandBuffer::new(
             self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
         )?;
+
+        let dest_image = destination.image();
+        let mut to_attachment = ImageMemoryBarrier::image(dest_image.clone());
+        to_attachment.src_stages = PipelineStages::COLOR_ATTACHMENT_OUTPUT; // matches the submit's wait stage
+        to_attachment.src_access = AccessFlags::empty();
+        to_attachment.dst_stages = PipelineStages::COLOR_ATTACHMENT_OUTPUT;
+        to_attachment.dst_access = AccessFlags::COLOR_ATTACHMENT_WRITE;
+        to_attachment.old_layout = ImageLayout::Undefined; // "don't care about old contents"; we clear anyway
+        to_attachment.new_layout = ImageLayout::ColorAttachmentOptimal;
+        to_attachment.subresource_range = dest_image.clone().subresource_range();
+
+        command_buffer.pipeline_barrier(&DependencyInfo {
+            image_memory_barriers: vec![to_attachment].into(),
+            ..Default::default()
+        });
+        command_buffer.keep(dest_image);
 
         let color_attachment = Arc::new(ChaosRenderAttachment::new(
             destination,
@@ -287,50 +368,109 @@ impl ChaosRenderer {
     }
 
     pub fn end_frame(&mut self, mut command_buffer: ChaosCommandBuffer) -> Result<(), RenderError> {
+        let slot_index = self.current_frame % FRAMES_IN_FLIGHT;
+        let image_index = self.current_image_index as usize;
+
         command_buffer.end_rendering();
-        // TODO(step 5): submit `finished_frame.cmd_buffer` and keep `finished_frame`
-        // alive until this frame's fence signals. Until then the recorded work is
-        // dropped here and never reaches the GPU.
-        let _finished_frame = command_buffer.finish()?;
 
-        let image_i = self.current_buffer;
-        let acquire_future = self
-            .current_acquire_future
-            .take()
-            .expect("end_frame called before start_frame acquired a swapchain image");
+        // Transition the backbuffer from attachment layout to the layout the
+        // presentation engine expects.
+        let image = self.render_context.backbuffers()[image_index].image();
+        let mut to_present = ImageMemoryBarrier::image(image.clone());
+        to_present.src_stages = PipelineStages::COLOR_ATTACHMENT_OUTPUT;
+        to_present.src_access = AccessFlags::COLOR_ATTACHMENT_WRITE; // make our writes available
+        to_present.dst_stages = PipelineStages::BOTTOM_OF_PIPE; // nothing in this submit waits on it
+        to_present.dst_access = AccessFlags::empty(); // present is synchronized by the semaphore
+        to_present.old_layout = ImageLayout::ColorAttachmentOptimal;
+        to_present.new_layout = ImageLayout::PresentSrc;
+        to_present.subresource_range = image.subresource_range();
 
-        let previous_future = match self.fences[image_i as usize].take() {
-            // Create a NowFuture
-            None => {
-                let mut now = sync::now(self.render_context.device());
-                now.cleanup_finished();
+        command_buffer.pipeline_barrier(&DependencyInfo {
+            image_memory_barriers: vec![to_present].into(),
+            ..Default::default()
+        });
+        command_buffer.keep(image);
 
-                now.boxed()
-            }
-            // Use the existing FenceSignalFuture
-            Some(fence) => fence.boxed(),
-        };
+        let finished = command_buffer.finish()?;
 
-        let future = previous_future
-            .join(acquire_future)
-            .then_swapchain_present(
-                self.queue.clone(),
-                SwapchainPresentInfo::swapchain_image_index(
-                    self.render_context.swapchain(),
-                    image_i,
-                ),
+        // The ash structs hold *pointers* to these arrays, so they must be named
+        // locals that outlive the submit call. Temporaries won't work.
+        let wait_semaphores = [self.frames[slot_index].image_available.as_ref().handle()];
+        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let command_buffers = [finished.cmd_buffer.handle()];
+        let signal_semaphores = [self.render_finished[image_index].as_ref().handle()];
+
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages) // one stage per wait semaphore
+            .command_buffers(&command_buffers)
+            .signal_semaphores(&signal_semaphores);
+
+        let fence = self.frames[slot_index].fence.clone();
+        unsafe { fence.reset().context("resetting frame slot fence") }?; // reset right before the submit (see earlier)
+
+        self.queue.with(|_guard| unsafe {
+            // `_guard` holds the queue's lock: Vulkan requires queue access to be externally
+            // synchronized, and vulkano uses this lock for its own submits/presents.
+            let fns = self.queue.device().fns();
+            (fns.v1_0.queue_submit)(
+                self.queue.as_ref().handle(),
+                1,
+                &submit_info,
+                fence.handle(),
             )
-            .then_signal_fence_and_flush();
+            .result()
+            .map_err(VulkanError::from)
+            .context("render queue submit")
+        })?;
 
-        self.fences[image_i as usize] = match future.context("present frame") {
-            Ok(value) => Some(value),
+        // The fence signals when the GPU is done with this submit. Until then the command
+        // buffer and every keep-alive must stay alive, so they live in the slot;
+        // start_frame drops them after waiting on this slot's fence.
+        self.frames[slot_index].finished_frame = Some(finished);
+
+        // Hand the image back to the window once the submit above has signalled
+        // this image's render_finished semaphore.
+        let present_info = PresentInfo {
+            wait_semaphores: vec![SemaphorePresentInfo::new(
+                self.render_finished[image_index].clone(),
+            )],
+            swapchain_infos: vec![SwapchainPresentInfo::swapchain_image_index(
+                self.render_context.swapchain(),
+                self.current_image_index,
+            )],
+            ..Default::default()
+        };
+        let present_result = self
+            .queue
+            .with(|mut q| unsafe {
+                // One result per swapchain; collect inside the closure so nothing
+                // borrows the queue guard.
+                q.present(&present_info)
+                    .map(|results| results.collect::<Vec<_>>())
+            })
+            .context("present swapchain image")
+            .and_then(|results| {
+                results
+                    .into_iter()
+                    .next()
+                    .unwrap_or(Ok(false))
+                    .context("present swapchain image")
+            });
+
+        match present_result {
+            Ok(suboptimal) => {
+                if suboptimal {
+                    self.pending_resize = Some(self.render_context.swapchain().image_extent());
+                }
+            }
+            // The window changed; not fatal, recreate before the next frame.
             Err(RenderError::SwapchainOutOfDate) => {
                 self.pending_resize = Some(self.render_context.swapchain().image_extent());
-                None
             }
             Err(e) => return Err(e),
-        };
-        self.current_buffer = image_i;
+        }
+
         self.current_frame = self.current_frame.wrapping_add(1);
         Ok(())
     }
@@ -349,14 +489,30 @@ impl ChaosRenderer {
     }
 
     fn recreate_swapchain_now(&mut self, extent: [u32; 2]) -> Result<(), RenderError> {
-        // Wait for any in-flight frames before retiring the current swapchain.
-        for fence_slot in self.fences.iter_mut() {
-            if let Some(fence) = fence_slot.take() {
-                fence
-                    .wait(None)
-                    .context("wait for in-flight frames before swapchain recreation")?;
-            }
+        // wait for all the frames
+        for frame in &mut self.frames {
+            frame
+                .fence
+                .wait(None)
+                .context("wait for all frames to finish before recreating swapchain")?;
+            frame.finished_frame = None; // drop the finished frame so its resources can be freed
         }
-        self.render_context.recreate_swapchain(extent)
+
+        // recreate the swapchain and backbuffers
+        self.render_context.recreate_swapchain(extent)?;
+
+        // recreate the render finished semaphores for each backbuffer
+        self.render_finished.clear();
+        for _ in self.render_context.backbuffers().iter() {
+            // create a semaphore for each backbuffer to signal when rendering is finished
+            self.render_finished.push(Arc::new(
+                Semaphore::new(
+                    self.render_context.device().clone(),
+                    SemaphoreCreateInfo::default(),
+                )
+                .context("creating a render finished semaphore")?,
+            ));
+        }
+        Ok(())
     }
 }

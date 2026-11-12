@@ -66,12 +66,7 @@ impl UiEventRouter {
                 if prev != hit {
                     let old_chain = Self::ancestor_chain(tree, prev);
                     let new_chain = Self::ancestor_chain(tree, hit);
-                    Self::update_pseudo_chain(
-                        tree,
-                        &old_chain,
-                        &new_chain,
-                        PseudoState::Hover,
-                    );
+                    Self::update_pseudo_chain(tree, &old_chain, &new_chain, PseudoState::Hover);
                     tree.hovered_node = hit;
                     if let Some(old) = prev {
                         out_events.push(UiEvent::PointerLeave { node: old });

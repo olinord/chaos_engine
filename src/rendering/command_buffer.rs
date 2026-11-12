@@ -31,8 +31,10 @@ pub struct ChaosCommandBuffer {
     keep_alive: Vec<Arc<dyn Any + Send + Sync>>,
 }
 
+#[derive(Clone)]
 pub struct FinishedFrame {
     pub cmd_buffer: Arc<CommandBuffer>,
+    #[allow(dead_code)]
     keep_alive: Vec<Arc<dyn Any + Send + Sync>>,
 }
 
@@ -478,7 +480,7 @@ impl ChaosCommandBuffer {
     pub fn draw_indexed_indirect(
         &mut self,
         indirect_buffer: &Subbuffer<[DrawIndexedIndirectCommand]>,
-        draw_count: u32,
+        draw_count: usize,
         stride: u32,
     ) -> &mut Self {
         debug_assert!(
@@ -488,7 +490,7 @@ impl ChaosCommandBuffer {
         expect_valid(
             unsafe {
                 self.cmd_buffer
-                    .draw_indexed_indirect(indirect_buffer, draw_count, stride)
+                    .draw_indexed_indirect(indirect_buffer, draw_count as u32, stride)
             },
             "draw_indexed_indirect",
         );
