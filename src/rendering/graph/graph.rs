@@ -718,17 +718,22 @@ impl Graph {
         inputs: &[(String, ResourceId)],
         outputs: &[(String, ResourceId)],
     ) -> Result<(), GraphError> {
-        // nothing will render for now, which is fine until we hook things up for realz
-        let destinations = [];
-        command_buffer.begin_rendering(
-            &destinations,
-            None,
-            None,
-            Some(ChaosRenderExtent {
-                size: [800, 600],
-                offset: None,
-            }),
-        );
+        let has_rendering: bool = node.queue != QueueKind::Compute && node.outputs.len() > 0;
+
+        if has_rendering {
+            // nothing will render for now, which is fine until we hook things up for realz
+            let destinations = [];
+
+            command_buffer.begin_rendering(
+                &destinations,
+                None,
+                None,
+                Some(ChaosRenderExtent {
+                    size: [800, 600],
+                    offset: None,
+                }),
+            );
+        }
 
         // the context holds the command buffer borrow, so it is created after begin_rendering
         // and consumed by execute before end_rendering
@@ -740,7 +745,9 @@ impl Graph {
                 source: Box::new(error),
             })?;
 
-        command_buffer.end_rendering();
+        if has_rendering {
+            command_buffer.end_rendering();
+        }
         Ok(())
     }
 
