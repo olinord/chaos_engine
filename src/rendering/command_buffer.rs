@@ -53,11 +53,6 @@ pub enum ChaosRenderAttachmentLoadOp {
     DontCare,
 }
 
-pub struct ChaosRenderExtent {
-    pub size: [u32; 2],
-    pub offset: Option<[u32; 2]>,
-}
-
 pub struct ChaosRenderAttachment {
     texture: Arc<ChaosTexture>,
     load_op: ChaosRenderAttachmentLoadOp,
@@ -159,35 +154,29 @@ impl ChaosCommandBuffer {
     /// Opens a dynamic rendering scope on the node's output attachments.
     /// It's a good place to also set the viewport and scissor from the render size, since the graph knows it.
     /// It sets the inside_rendering flag.
-    /// Panics if no extents are given and there are no attachments to size the render area from.
+    /// Panics if no render_size are given and there are no attachments to size the render area from.
     pub(crate) fn begin_rendering(
         &mut self,
         color_attachments: &[Option<Arc<ChaosRenderAttachment>>],
         depth_attachment: Option<Arc<ChaosRenderAttachment>>,
         stencil_attachment: Option<Arc<ChaosRenderAttachment>>,
-        extents: Option<ChaosRenderExtent>,
+        render_size: Option<[u32; 2]>,
+        render_offset: Option<[u32; 2]>,
     ) -> &mut Self {
         debug_assert!(!self.inside_rendering, "begin_rendering called twice");
-        let render_area = match &extents {
-            Some(extent) => extent.size,
-            None => {
-                // Size the render area from the first attachment we find,
-                // preferring depth, then stencil, then the first color attachment.
-                let attachment = depth_attachment
-                    .as_ref()
-                    .or(stencil_attachment.as_ref())
-                    .or_else(|| color_attachments.iter().find_map(|a| a.as_ref()))
-                    .expect("begin_rendering needs either extents or at least one attachment");
-                let texture_dims = attachment.texture.description().dimensions;
-                [texture_dims[0], texture_dims[1]]
-            }
-        };
+        let render_area = render_size.unwrap_or_else(|| {
+            // Size the render area from the first attachment we find,
+            // preferring depth, then stencil, then the first color attachment.
+            let attachment = depth_attachment
+                .as_ref()
+                .or(stencil_attachment.as_ref())
+                .or_else(|| color_attachments.iter().find_map(|a| a.as_ref()))
+                .expect("begin_rendering needs either render_size or at least one attachment");
+            let texture_dims = attachment.texture.description().dimensions;
+            [texture_dims[0], texture_dims[1]]
+        });
 
-        let render_offset = if let Some(extent) = &extents {
-            extent.offset.unwrap_or([0, 0])
-        } else {
-            [0, 0]
-        };
+        let render_offset = render_offset.unwrap_or([0, 0]);
 
         let rendering_info = RenderingInfo {
             color_attachments: color_attachments

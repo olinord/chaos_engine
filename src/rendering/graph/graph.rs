@@ -8,9 +8,11 @@ use vulkano::{
     sync::{AccessFlags, BufferMemoryBarrier, DependencyInfo, ImageMemoryBarrier, PipelineStages},
 };
 
-use crate::rendering::command_buffer::{ChaosCommandBuffer, ChaosRenderExtent};
+use crate::rendering::command_buffer::{
+    ChaosClearValue, ChaosCommandBuffer, ChaosRenderAttachment, ChaosRenderAttachmentLoadOp,
+};
 use crate::rendering::errors::RenderError;
-use crate::rendering::graph::resource::ResourceDescription;
+use crate::rendering::graph::resource::{ResourceDescription, ResourceUsage};
 use crate::rendering::{
     context::ChaosRenderContext,
     graph::{
@@ -713,25 +715,57 @@ impl Graph {
         &self,
         _destination: &Arc<ChaosTexture>,
         command_buffer: &mut ChaosCommandBuffer,
-        graph_node_id: &usize,
+        graph_node_id: &GraphNodeId,
         node: &Arc<GraphNode>,
         inputs: &[(String, ResourceId)],
         outputs: &[(String, ResourceId)],
     ) -> Result<(), GraphError> {
-        let has_rendering: bool = node.queue != QueueKind::Compute && node.outputs.len() > 0;
-
+        let has_rendering = node.has_rendering();
         if has_rendering {
-            // nothing will render for now, which is fine until we hook things up for realz
-            let destinations = [];
+            let mut color_attachments: Vec<Option<Arc<ChaosRenderAttachment>>> = vec![];
+            let mut depth_attachment: Option<Arc<ChaosRenderAttachment>> = None;
+
+            for (name, id) in outputs {
+                let usage = node
+                    .resource_usages
+                    .get(name)
+                    .expect("with_resource registers a usage for every resource");
+
+                let resource_handle = self
+                    .resources
+                    .get(id)
+                    .expect("sort registers every resource");
+                match *usage {
+                    ResourceUsage::ColorAttachment => {
+                        color_attachments.push(Some(resource_handle.as_attachment(
+                            ChaosRenderAttachmentLoadOp::Clear(ChaosClearValue::Float([
+                                0.0, 0.0, 0.0, 0.0,
+                            ])),
+                            usage.layout(),
+                            true,
+                        )));
+                    }
+                    ResourceUsage::DepthAttachment => {
+                        if depth_attachment.is_none() {
+                            depth_attachment = Some(resource_handle.as_attachment(
+                                ChaosRenderAttachmentLoadOp::Clear(ChaosClearValue::Depth(1.0f32)),
+                                usage.layout(),
+                                true,
+                            ));
+                        } else {
+                            panic!("More than one depth attachment used in rendering");
+                        }
+                    }
+                    _ => {}
+                };
+            }
 
             command_buffer.begin_rendering(
-                &destinations,
+                color_attachments.as_slice(),
+                depth_attachment,
                 None,
                 None,
-                Some(ChaosRenderExtent {
-                    size: [800, 600],
-                    offset: None,
-                }),
+                None,
             );
         }
 

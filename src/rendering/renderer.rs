@@ -30,7 +30,7 @@ use crate::{
         adapters::select_physical_device,
         command_buffer::{
             ChaosClearValue, ChaosCommandBuffer, ChaosRenderAttachment,
-            ChaosRenderAttachmentLoadOp, ChaosRenderExtent, FinishedFrame,
+            ChaosRenderAttachmentLoadOp, FinishedFrame,
         },
         context::ChaosRenderContext,
         draw_command::ChaosDrawQueue,
@@ -333,15 +333,7 @@ impl ChaosRenderer {
         // built with dynamic viewport state (see `EffectFactory`) pick up the
         // current window size after a resize.
         command_buffer
-            .begin_rendering(
-                &[Some(color_attachment)],
-                None,
-                None,
-                Some(ChaosRenderExtent {
-                    size: fb_extent,
-                    offset: None,
-                }),
-            )
+            .begin_rendering(&[Some(color_attachment)], None, None, Some(fb_extent), None)
             .set_viewport(self.render_context.viewport())
             .set_scissor(Scissor {
                 offset: [0, 0],

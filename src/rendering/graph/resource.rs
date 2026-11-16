@@ -7,7 +7,11 @@ use vulkano::{
 };
 
 use crate::rendering::{
-    buffer::ChaosBuffer, context::ChaosRenderContext, errors::RenderError, texture::ChaosTexture,
+    buffer::ChaosBuffer,
+    command_buffer::{ChaosRenderAttachment, ChaosRenderAttachmentLoadOp},
+    context::ChaosRenderContext,
+    errors::RenderError,
+    texture::ChaosTexture,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +147,28 @@ impl ResourceHandle {
             name: name.to_string(),
             description: desc.clone(),
             resource: None,
+        }
+    }
+
+    pub fn as_attachment(
+        &self,
+        load_op: ChaosRenderAttachmentLoadOp,
+        layout: ImageLayout,
+        store: bool,
+    ) -> Arc<ChaosRenderAttachment> {
+        let texture = match &self.resource {
+            Some(resource) => resource,
+            None => panic!("trying to use a None resource as an attachment"),
+        };
+
+        match texture.as_ref() {
+            Resource::Texture(chaos_texture) => Arc::new(ChaosRenderAttachment::new(
+                chaos_texture.clone(),
+                load_op,
+                layout,
+                store,
+            )),
+            _ => panic!("trying to use a non-texture resource as an texture attachment"),
         }
     }
 
