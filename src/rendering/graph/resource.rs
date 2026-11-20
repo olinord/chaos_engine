@@ -116,8 +116,18 @@ pub fn layout_scope(layout: ImageLayout) -> Option<(PipelineStages, AccessFlags,
 }
 
 #[derive(Debug, Clone)]
+pub struct ImportedResourceSetting {
+    pub initial_layout: ImageLayout,
+    pub end_layout: ImageLayout,
+}
+
+#[derive(Debug, Clone)]
 pub enum ResourceDescription {
     Texture(TextureDescription),
+    Imported {
+        resource_name: String,
+        setting: ImportedResourceSetting,
+    },
     #[cfg(test)]
     TestTextureResource,
     #[cfg(test)]
@@ -147,6 +157,17 @@ impl ResourceHandle {
             name: name.to_string(),
             description: desc.clone(),
             resource: None,
+        }
+    }
+    pub fn new_with_texture(
+        desc: &ResourceDescription,
+        name: &str,
+        texture: &Arc<ChaosTexture>,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            description: desc.clone(),
+            resource: Some(Arc::new(Resource::Texture(texture.clone()))),
         }
     }
 
@@ -214,6 +235,7 @@ impl ResourceHandle {
                 )?;
                 self.resource = Some(Arc::new(Resource::Texture(Arc::new(image))));
             }
+            ResourceDescription::Imported { .. } => {}
             #[cfg(test)]
             ResourceDescription::TestTextureResource => {
                 self.resource = Some(Arc::new(Resource::TestTextureResource));

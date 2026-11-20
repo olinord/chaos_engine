@@ -70,6 +70,9 @@ pub enum GraphBuildError {
         input_name: String,
         layout: ImageLayout,
     },
+    ImportedResourceSettingMismatch {
+        resource_name: String,
+    },
     CircularConnection(Vec<String>),
 }
 
@@ -89,6 +92,8 @@ pub enum GraphError {
     Render(RenderError),
     /// Free-form error for node implementations.
     Custom(String),
+    /// Unknown graph destination
+    UnknownDestination(String, Vec<String>),
 }
 
 impl From<RenderError> for GraphError {
@@ -154,6 +159,10 @@ impl fmt::Display for GraphBuildError {
             GraphBuildError::CircularConnection(nodes) => {
                 write!(f, "circular connection between nodes: {}", nodes.join(", "))
             }
+            GraphBuildError::ImportedResourceSettingMismatch { resource_name } => write!(
+                f,
+                "imported resource '{resource_name}' is imported twice with mismatching settings"
+            ),
         }
     }
 }
@@ -176,6 +185,9 @@ impl fmt::Display for GraphError {
             GraphError::NodeFailed { node_name, .. } => write!(f, "node '{node_name}' failed"),
             GraphError::Render(_) => write!(f, "rendering error in graph"),
             GraphError::Custom(message) => write!(f, "{message}"),
+            GraphError::UnknownDestination(name, available_names) => {
+                write!(f, "{name} unknown, available names are {available_names:?}")
+            }
         }
     }
 }
@@ -187,7 +199,8 @@ impl Error for GraphError {
             GraphError::Render(error) => Some(error),
             GraphError::Invalid(_)
             | GraphError::NodeResourceNotFound { .. }
-            | GraphError::Custom(_) => None,
+            | GraphError::Custom(_)
+            | GraphError::UnknownDestination(_, _) => None,
         }
     }
 }
@@ -266,6 +279,7 @@ pub struct Graph {
     resources: HashMap<ResourceId, Arc<ResourceHandle>>,
     resource_lookup: HashMap<(GraphNodeId, String), ResourceId>,
     layouts: HashMap<ResourceId, ImageLayout>,
+    imported_resources: HashMap<String, ResourceId>,
     // jobs are sorted by levels for multithreaded rendering and async compute
     jobs: Vec<Vec<Job>>,
     sort_jobs: bool,
@@ -287,6 +301,7 @@ impl Graph {
             resources: HashMap::new(),
             resource_lookup: HashMap::new(),
             layouts: HashMap::new(),
+            imported_resources: HashMap::new(),
             jobs: Vec::new(),
             sort_jobs: true,
             recreate_resources: true,
@@ -356,26 +371,69 @@ impl Graph {
     }
 
     // nodes are moved into the graph so they don't get updated outside of the graph
-    pub fn add_node(&mut self, node: GraphNode) -> GraphNodeId {
+    pub fn add_node(&mut self, node: GraphNode) -> Result<GraphNodeId, GraphBuildError> {
         let node_id = self.current_node_id;
         self.current_node_id += 1;
         self.sort_jobs = true;
 
         for (name, resource_description) in node.resource_descriptions.iter() {
-            let resource_handle = ResourceHandle::new(resource_description, name);
+            let mut resource_id = self.current_resource_id;
+            match resource_description {
+                ResourceDescription::Imported {
+                    resource_name,
+                    setting,
+                } => match self.imported_resources.get(resource_name) {
+                    Some(shared_resource_id) => {
+                        let new_setting = setting;
+                        // check if the settings are the same for the stored imported resource
+                        match &self
+                            .resources
+                            .get(shared_resource_id)
+                            .unwrap()
+                            .clone()
+                            .description
+                        {
+                            ResourceDescription::Imported { setting, .. } => {
+                                if setting.initial_layout != new_setting.initial_layout
+                                    || setting.end_layout != new_setting.end_layout
+                                {
+                                    return Err(GraphBuildError::ImportedResourceSettingMismatch {
+                                        resource_name: resource_name.clone(),
+                                    });
+                                }
+                            }
+                            _ => (), // this will never happen
+                        }
+                        resource_id = *shared_resource_id;
+                    }
+                    None => {
+                        self.imported_resources
+                            .insert(resource_name.clone(), resource_id);
+                        self.current_resource_id += 1;
 
-            // the resource handle is not valid yet
-            self.resources
-                .insert(self.current_resource_id, Arc::new(resource_handle));
+                        let resource_handle = ResourceHandle::new(resource_description, name);
+                        self.resources
+                            .insert(resource_id, Arc::new(resource_handle));
+                    }
+                },
+                _ => {
+                    self.current_resource_id += 1;
+                    let resource_handle = ResourceHandle::new(resource_description, name);
+
+                    self.resources
+                        .insert(resource_id, Arc::new(resource_handle));
+                }
+            }
+
             self.resource_lookup
-                .insert((node_id, name.clone()), self.current_resource_id);
-            self.current_resource_id += 1;
+                .insert((node_id, name.clone()), resource_id);
+
             self.recreate_resources = true;
         }
 
         self.nodes.insert(node_id, Arc::new(node));
 
-        node_id
+        Ok(node_id)
     }
 
     pub fn connect(
@@ -542,9 +600,22 @@ impl Graph {
         self.jobs.clear();
         let inputs = self.resolve_inputs();
 
-        for level in levels {
+        // check where the imported resources are used in the levels, marking the start and end levels
+        let mut imported_resource_ids = self
+            .imported_resources
+            .iter()
+            .map(|(_, resource_id)| *resource_id)
+            .collect::<Vec<ResourceId>>();
+        imported_resource_ids.sort();
+
+        // the places that use the imported resource last, so we can know when to add barriers
+        let mut last_imported_resource_usage: HashMap<ResourceId, usize> = HashMap::new();
+
+        for (level_index, level) in levels.iter().enumerate() {
             let mut level_jobs: Vec<Job> = vec![];
-            for node_id in level {
+            // check if the level is the first usage of an imported texture
+            for n_id in level {
+                let node_id = *n_id;
                 let node = &self.nodes[&node_id];
                 let mut node_inputs: Vec<(String, ResourceId)> = Vec::new();
                 // add all barriers for the current node
@@ -552,6 +623,7 @@ impl Graph {
                     let resource_id = *inputs
                         .get(&(node_id, input_name.clone()))
                         .expect("validation ensured this input is connected");
+                    last_imported_resource_usage.insert(resource_id, level_index);
 
                     // add a barrier
                     match kind {
@@ -574,6 +646,8 @@ impl Graph {
                         .resource_lookup
                         .get(&(node_id, name.clone()))
                         .expect("add_node registers every resource the node declares");
+
+                    last_imported_resource_usage.insert(resource_id, level_index);
 
                     // add a barrier
                     level_jobs.push(Job::BarrierJob {
@@ -609,13 +683,32 @@ impl Graph {
             self.jobs.push(level_jobs);
         }
 
+        // now insert the imported resource barriers when the resource is not used anymore
+        for (resource_id, level_id) in last_imported_resource_usage {
+            let layout = match self
+                .resources
+                .get(&resource_id)
+                .unwrap()
+                .clone()
+                .description
+            {
+                ResourceDescription::Imported { ref setting, .. } => setting.end_layout,
+                _ => continue,
+            };
+
+            self.jobs[level_id].push(Job::BarrierJob {
+                resource_id,
+                image_layout: layout,
+            });
+        }
+
         self.sort_jobs = false;
         Ok(())
     }
 
     pub fn render(
         &mut self,
-        destination: &Arc<ChaosTexture>,
+        destinations: &HashMap<String, Arc<ChaosTexture>>,
         command_buffer: &mut ChaosCommandBuffer,
         render_context: &Arc<ChaosRenderContext>,
     ) -> Result<(), GraphError> {
@@ -629,7 +722,6 @@ impl Graph {
                                 || *dim == TextureSizeType::PercentageOfRenderHeight
                         })
                     }
-                    #[cfg(test)]
                     _ => false,
                 };
 
@@ -640,7 +732,6 @@ impl Graph {
                                 || *dim == TextureSizeType::PercentageOfDisplayHeight
                         })
                     }
-                    #[cfg(test)]
                     _ => false,
                 };
 
@@ -669,6 +760,31 @@ impl Graph {
             self.sort()?;
         }
 
+        // bind imported textures for this frame
+        for (name, resource_id) in &self.imported_resources {
+            match destinations.get(name) {
+                Some(texture) => {
+                    let handle = self.resources.get(&resource_id).unwrap();
+                    let initial_layout = match &handle.description {
+                        ResourceDescription::Imported { setting, .. } => setting.initial_layout,
+                        _ => unreachable!(),
+                    };
+                    self.layouts.insert(*resource_id, initial_layout);
+                    let resource =
+                        ResourceHandle::new_with_texture(&handle.description, name, &texture);
+                    self.resources.insert(*resource_id, Arc::new(resource));
+                }
+                None => {
+                    let mut names: Vec<String> = destinations
+                        .keys()
+                        .map(|n| n.clone())
+                        .collect::<Vec<String>>();
+                    names.sort();
+                    return Err(GraphError::UnknownDestination(name.clone(), names));
+                }
+            }
+        }
+
         for level in &self.jobs {
             for job in level {
                 match job {
@@ -695,7 +811,6 @@ impl Graph {
                     } => {
                         if let Some(node) = self.nodes.get(graph_node_id) {
                             self.execute_node(
-                                destination,
                                 command_buffer,
                                 graph_node_id,
                                 node,
@@ -713,7 +828,6 @@ impl Graph {
 
     fn execute_node(
         &self,
-        _destination: &Arc<ChaosTexture>,
         command_buffer: &mut ChaosCommandBuffer,
         graph_node_id: &GraphNodeId,
         node: &Arc<GraphNode>,
@@ -806,20 +920,30 @@ impl Graph {
             ImageLayout::Undefined,
             "can't transition to the undefined layout"
         );
-        let (src_stages, _, src_writes) = layout_scope(old_layout)
-            .unwrap_or_else(|| panic!("no barrier scope for image layout {old_layout:?}"));
-        let (dst_stages, dst_reads, dst_writes) = layout_scope(new_layout)
-            .unwrap_or_else(|| panic!("no barrier scope for image layout {new_layout:?}"));
 
         let resource = resources
             .get(&resource_id)
             .and_then(|handle| handle.resource.clone())
             .expect("render creates every resource before running jobs");
         let image = match resource.as_ref() {
-            Resource::Texture(image) => image.image(),
+            Resource::Texture(image) => image,
             other => panic!("image barrier on a resource that isn't a texture: {other:?}"),
         };
+        Self::create_barrier(image.clone(), old_layout, new_layout, command_buffer);
+        layouts.insert(resource_id, new_layout);
+    }
 
+    fn create_barrier(
+        texture: Arc<ChaosTexture>,
+        old_layout: ImageLayout,
+        new_layout: ImageLayout,
+        command_buffer: &mut ChaosCommandBuffer,
+    ) {
+        let (src_stages, _, src_writes) = layout_scope(old_layout)
+            .unwrap_or_else(|| panic!("no barrier scope for image layout {old_layout:?}"));
+        let (dst_stages, dst_reads, dst_writes) = layout_scope(new_layout)
+            .unwrap_or_else(|| panic!("no barrier scope for image layout {new_layout:?}"));
+        let image = texture.image();
         let mut barrier = ImageMemoryBarrier::image(image.clone());
         barrier.src_stages = src_stages;
         barrier.src_access = src_writes;
@@ -837,7 +961,6 @@ impl Graph {
             image_memory_barriers: vec![barrier].into(),
             ..Default::default()
         });
-        layouts.insert(resource_id, new_layout);
     }
 
     /// Makes the writes of earlier nodes to a buffer visible to the node that consumes it.
@@ -1072,6 +1195,7 @@ fn kind_mismatch(kind: &NodeInputKind, description: &ResourceDescription) -> Opt
             None
         }
         (NodeInputKind::Texture(_), ResourceDescription::Texture(_)) => None,
+        (NodeInputKind::Texture(_), ResourceDescription::Imported { .. }) => None,
         // there is no buffer resource description yet, so nothing can feed a buffer input
         (NodeInputKind::Buffer(_), _) => Some("buffer"),
     }
@@ -1082,7 +1206,7 @@ mod tests {
     use super::*;
     use crate::rendering::graph::{
         node::NodeType,
-        resource::{ResourceDescription, ResourceUsage},
+        resource::{ImportedResourceSetting, ResourceDescription, ResourceUsage},
     };
     use std::assert_eq;
 
@@ -1124,7 +1248,7 @@ mod tests {
     #[test]
     fn test_to_mermaid_non_empty_graph() {
         let mut graph = Graph::new([800, 600]);
-        let node_id = graph.add_node(test_node(vec![], vec![]));
+        let node_id = graph.add_node(test_node(vec![], vec![])).unwrap();
         let mermaid = graph.to_mermaid();
         assert!(mermaid.contains(format!("node_{}", node_id).as_str()));
         assert!(mermaid.contains("Test Node"));
@@ -1133,16 +1257,20 @@ mod tests {
     #[test]
     fn test_to_mermaid_graph_with_connection() {
         let mut graph = Graph::new([800, 600]);
-        let source_id = graph.add_node(test_named_node(
-            "Source Node".to_string(),
-            vec![],
-            vec!["source_output".to_string()],
-        ));
-        let destination_id = graph.add_node(test_named_node(
-            "Destination Node".to_string(),
-            vec!["input".to_string()],
-            vec![],
-        ));
+        let source_id = graph
+            .add_node(test_named_node(
+                "Source Node".to_string(),
+                vec![],
+                vec!["source_output".to_string()],
+            ))
+            .unwrap();
+        let destination_id = graph
+            .add_node(test_named_node(
+                "Destination Node".to_string(),
+                vec!["input".to_string()],
+                vec![],
+            ))
+            .unwrap();
 
         let result = graph.connect(
             source_id,
@@ -1162,26 +1290,34 @@ mod tests {
     #[test]
     fn test_to_mermaid_groups_parallel_nodes_into_levels() {
         let mut graph = Graph::new([800, 600]);
-        let root = graph.add_node(test_named_node(
-            "Root".to_string(),
-            vec![],
-            vec!["out".to_string()],
-        ));
-        let left = graph.add_node(test_named_node(
-            "Left".to_string(),
-            vec!["in".to_string()],
-            vec!["out".to_string()],
-        ));
-        let right = graph.add_node(test_named_node(
-            "Right".to_string(),
-            vec!["in".to_string()],
-            vec!["out".to_string()],
-        ));
-        let join = graph.add_node(test_named_node(
-            "Join".to_string(),
-            vec!["a".to_string(), "b".to_string()],
-            vec![],
-        ));
+        let root = graph
+            .add_node(test_named_node(
+                "Root".to_string(),
+                vec![],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+        let left = graph
+            .add_node(test_named_node(
+                "Left".to_string(),
+                vec!["in".to_string()],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+        let right = graph
+            .add_node(test_named_node(
+                "Right".to_string(),
+                vec!["in".to_string()],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+        let join = graph
+            .add_node(test_named_node(
+                "Join".to_string(),
+                vec!["a".to_string(), "b".to_string()],
+                vec![],
+            ))
+            .unwrap();
         graph
             .connect(root, "out".to_string(), left, "in".to_string())
             .unwrap();
@@ -1211,10 +1347,14 @@ mod tests {
     #[test]
     fn test_to_mermaid_colours_nodes_by_queue() {
         let mut graph = Graph::new([800, 600]);
-        let gfx = graph.add_node(test_named_node("Gfx".to_string(), vec![], vec![]));
-        let comp = graph.add_node(
-            test_named_node("Comp".to_string(), vec![], vec![]).with_queue(QueueKind::Compute),
-        );
+        let gfx = graph
+            .add_node(test_named_node("Gfx".to_string(), vec![], vec![]))
+            .unwrap();
+        let comp = graph
+            .add_node(
+                test_named_node("Comp".to_string(), vec![], vec![]).with_queue(QueueKind::Compute),
+            )
+            .unwrap();
 
         let mermaid = graph.to_mermaid();
         assert!(mermaid.contains(&format!("node_{}[\"Gfx\"]:::graphics", gfx)));
@@ -1227,8 +1367,8 @@ mod tests {
     #[test]
     fn test_to_mermaid_isolated_nodes_share_first_level() {
         let mut graph = Graph::new([800, 600]);
-        let a = graph.add_node(test_node(vec![], vec![]));
-        let b = graph.add_node(test_node(vec![], vec![]));
+        let a = graph.add_node(test_node(vec![], vec![])).unwrap();
+        let b = graph.add_node(test_node(vec![], vec![])).unwrap();
         let (parents, children) = graph.create_hierarchy();
         assert_eq!(graph.compute_levels(parents, children), vec![vec![a, b]]);
     }
@@ -1236,17 +1376,23 @@ mod tests {
     #[test]
     fn test_to_mermaid_marks_cycle_as_unscheduled() {
         let mut graph = Graph::new([800, 600]);
-        let free = graph.add_node(test_named_node("Free".to_string(), vec![], vec![]));
-        let a = graph.add_node(test_named_node(
-            "A".to_string(),
-            vec!["in".to_string()],
-            vec!["out".to_string()],
-        ));
-        let b = graph.add_node(test_named_node(
-            "B".to_string(),
-            vec!["in".to_string()],
-            vec!["out".to_string()],
-        ));
+        let free = graph
+            .add_node(test_named_node("Free".to_string(), vec![], vec![]))
+            .unwrap();
+        let a = graph
+            .add_node(test_named_node(
+                "A".to_string(),
+                vec!["in".to_string()],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+        let b = graph
+            .add_node(test_named_node(
+                "B".to_string(),
+                vec!["in".to_string()],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
         graph
             .connect(a, "out".to_string(), b, "in".to_string())
             .unwrap();
@@ -1280,7 +1426,7 @@ mod tests {
     fn test_sort_schedules_isolated_nodes_in_id_order() {
         let mut graph = Graph::new([800, 600]);
         let ids: Vec<GraphNodeId> = (0..5)
-            .map(|_| graph.add_node(test_node(vec![], vec![])))
+            .map(|_| graph.add_node(test_node(vec![], vec![])).unwrap())
             .collect();
 
         assert!(graph.sort().is_ok());
@@ -1290,26 +1436,34 @@ mod tests {
     #[test]
     fn test_sort_orders_diamond_by_levels() {
         let mut graph = Graph::new([800, 600]);
-        let root = graph.add_node(test_named_node(
-            "Root".to_string(),
-            vec![],
-            vec!["out".to_string()],
-        ));
-        let left = graph.add_node(test_named_node(
-            "Left".to_string(),
-            vec!["in".to_string()],
-            vec!["out".to_string()],
-        ));
-        let right = graph.add_node(test_named_node(
-            "Right".to_string(),
-            vec!["in".to_string()],
-            vec!["out".to_string()],
-        ));
-        let join = graph.add_node(test_named_node(
-            "Join".to_string(),
-            vec!["a".to_string(), "b".to_string()],
-            vec![],
-        ));
+        let root = graph
+            .add_node(test_named_node(
+                "Root".to_string(),
+                vec![],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+        let left = graph
+            .add_node(test_named_node(
+                "Left".to_string(),
+                vec!["in".to_string()],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+        let right = graph
+            .add_node(test_named_node(
+                "Right".to_string(),
+                vec!["in".to_string()],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+        let join = graph
+            .add_node(test_named_node(
+                "Join".to_string(),
+                vec!["a".to_string(), "b".to_string()],
+                vec![],
+            ))
+            .unwrap();
         graph
             .connect(root, "out".to_string(), left, "in".to_string())
             .unwrap();
@@ -1352,16 +1506,20 @@ mod tests {
     #[test]
     fn test_sort_binds_inputs_by_destination_name_and_outputs_by_own_name() {
         let mut graph = Graph::new([800, 600]);
-        let source = graph.add_node(test_named_node(
-            "Source".to_string(),
-            vec![],
-            vec!["source_out".to_string()],
-        ));
-        let sink = graph.add_node(test_named_node(
-            "Sink".to_string(),
-            vec!["albedo".to_string()],
-            vec!["sink_out".to_string()],
-        ));
+        let source = graph
+            .add_node(test_named_node(
+                "Source".to_string(),
+                vec![],
+                vec!["source_out".to_string()],
+            ))
+            .unwrap();
+        let sink = graph
+            .add_node(test_named_node(
+                "Sink".to_string(),
+                vec!["albedo".to_string()],
+                vec!["sink_out".to_string()],
+            ))
+            .unwrap();
         graph
             .connect(source, "source_out".to_string(), sink, "albedo".to_string())
             .unwrap();
@@ -1383,26 +1541,30 @@ mod tests {
     #[test]
     fn test_sort_binds_internal_resources_but_does_not_expose_them() {
         let mut graph = Graph::new([800, 600]);
-        let node = graph.add_node(
-            GraphNode::new("Node".to_string(), TestNode {})
-                .with_resource(
-                    "exposed".to_string(),
-                    ResourceDescription::TestTextureResource,
-                    ResourceUsage::ColorAttachment,
-                    true,
-                )
-                .with_resource(
-                    "scratch".to_string(),
-                    ResourceDescription::TestTextureResource,
-                    ResourceUsage::ColorAttachment,
-                    false,
-                ),
-        );
-        let consumer = graph.add_node(test_named_node(
-            "Consumer".to_string(),
-            vec!["in".to_string()],
-            vec![],
-        ));
+        let node = graph
+            .add_node(
+                GraphNode::new("Node".to_string(), TestNode {})
+                    .with_resource(
+                        "exposed".to_string(),
+                        ResourceDescription::TestTextureResource,
+                        ResourceUsage::ColorAttachment,
+                        true,
+                    )
+                    .with_resource(
+                        "scratch".to_string(),
+                        ResourceDescription::TestTextureResource,
+                        ResourceUsage::ColorAttachment,
+                        false,
+                    ),
+            )
+            .unwrap();
+        let consumer = graph
+            .add_node(test_named_node(
+                "Consumer".to_string(),
+                vec!["in".to_string()],
+                vec![],
+            ))
+            .unwrap();
 
         assert!(
             graph
@@ -1430,15 +1592,19 @@ mod tests {
     #[test]
     fn test_sort_emits_buffer_barrier_for_buffer_inputs() {
         let mut graph = Graph::new([800, 600]);
-        let source = graph.add_node(test_named_node(
-            "Source".to_string(),
-            vec![],
-            vec!["out".to_string()],
-        ));
-        let sink = graph.add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
-            "data".to_string(),
-            NodeInputKind::Buffer(BufferUsage::StorageRead),
-        ));
+        let source = graph
+            .add_node(test_named_node(
+                "Source".to_string(),
+                vec![],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+        let sink = graph
+            .add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
+                "data".to_string(),
+                NodeInputKind::Buffer(BufferUsage::StorageRead),
+            ))
+            .unwrap();
         graph
             .connect(source, "out".to_string(), sink, "data".to_string())
             .unwrap();
@@ -1479,21 +1645,27 @@ mod tests {
     #[test]
     fn test_circular_detection() {
         let mut graph = Graph::new([800, 600]);
-        let node_a = graph.add_node(test_named_node(
-            "Node A".to_string(),
-            vec!["input".to_string()],
-            vec!["output".to_string()],
-        ));
-        let node_b = graph.add_node(test_named_node(
-            "Node B".to_string(),
-            vec!["input".to_string()],
-            vec!["output".to_string()],
-        ));
-        let node_c = graph.add_node(test_named_node(
-            "Node C".to_string(),
-            vec!["input".to_string()],
-            vec!["output".to_string()],
-        ));
+        let node_a = graph
+            .add_node(test_named_node(
+                "Node A".to_string(),
+                vec!["input".to_string()],
+                vec!["output".to_string()],
+            ))
+            .unwrap();
+        let node_b = graph
+            .add_node(test_named_node(
+                "Node B".to_string(),
+                vec!["input".to_string()],
+                vec!["output".to_string()],
+            ))
+            .unwrap();
+        let node_c = graph
+            .add_node(test_named_node(
+                "Node C".to_string(),
+                vec!["input".to_string()],
+                vec!["output".to_string()],
+            ))
+            .unwrap();
 
         assert!(
             graph
@@ -1533,21 +1705,27 @@ mod tests {
     fn test_sort_reports_every_problem_at_once() {
         let mut graph = Graph::new([800, 600]);
         // two unconnected inputs on one node, plus a cycle elsewhere
-        graph.add_node(test_named_node(
-            "Lonely".to_string(),
-            vec!["a".to_string(), "b".to_string()],
-            vec![],
-        ));
-        let x = graph.add_node(test_named_node(
-            "X".to_string(),
-            vec!["in".to_string()],
-            vec!["out".to_string()],
-        ));
-        let y = graph.add_node(test_named_node(
-            "Y".to_string(),
-            vec!["in".to_string()],
-            vec!["out".to_string()],
-        ));
+        graph
+            .add_node(test_named_node(
+                "Lonely".to_string(),
+                vec!["a".to_string(), "b".to_string()],
+                vec![],
+            ))
+            .unwrap();
+        let x = graph
+            .add_node(test_named_node(
+                "X".to_string(),
+                vec!["in".to_string()],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+        let y = graph
+            .add_node(test_named_node(
+                "Y".to_string(),
+                vec!["in".to_string()],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
         graph
             .connect(x, "out".to_string(), y, "in".to_string())
             .unwrap();
@@ -1592,18 +1770,22 @@ mod tests {
     #[test]
     fn test_sort_rejects_texture_connected_to_buffer_input() {
         let mut graph = Graph::new([800, 600]);
-        let source = graph.add_node(
-            GraphNode::new("Source".to_string(), TestNode {}).with_resource(
-                "color".to_string(),
-                texture_description(),
-                ResourceUsage::ColorAttachment,
-                true,
-            ),
-        );
-        let sink = graph.add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
-            "data".to_string(),
-            NodeInputKind::Buffer(BufferUsage::StorageRead),
-        ));
+        let source = graph
+            .add_node(
+                GraphNode::new("Source".to_string(), TestNode {}).with_resource(
+                    "color".to_string(),
+                    texture_description(),
+                    ResourceUsage::ColorAttachment,
+                    true,
+                ),
+            )
+            .unwrap();
+        let sink = graph
+            .add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
+                "data".to_string(),
+                NodeInputKind::Buffer(BufferUsage::StorageRead),
+            ))
+            .unwrap();
         graph
             .connect(source, "color".to_string(), sink, "data".to_string())
             .unwrap();
@@ -1626,18 +1808,22 @@ mod tests {
     #[test]
     fn test_sort_rejects_unsupported_input_layout() {
         let mut graph = Graph::new([800, 600]);
-        let source = graph.add_node(
-            GraphNode::new("Source".to_string(), TestNode {}).with_resource(
+        let source = graph
+            .add_node(
+                GraphNode::new("Source".to_string(), TestNode {}).with_resource(
+                    "color".to_string(),
+                    texture_description(),
+                    ResourceUsage::ColorAttachment,
+                    true,
+                ),
+            )
+            .unwrap();
+        let sink = graph
+            .add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
                 "color".to_string(),
-                texture_description(),
-                ResourceUsage::ColorAttachment,
-                true,
-            ),
-        );
-        let sink = graph.add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
-            "color".to_string(),
-            NodeInputKind::Texture(ImageLayout::Undefined),
-        ));
+                NodeInputKind::Texture(ImageLayout::Undefined),
+            ))
+            .unwrap();
         graph
             .connect(source, "color".to_string(), sink, "color".to_string())
             .unwrap();
@@ -1658,14 +1844,310 @@ mod tests {
     #[test]
     fn test_connecting_to_same_node_returns_err() {
         let mut graph = Graph::new([800, 600]);
-        let node_id = graph.add_node(test_node(
-            vec!["input".to_string()],
-            vec!["output".to_string()],
-        ));
+        let node_id = graph
+            .add_node(test_node(
+                vec!["input".to_string()],
+                vec!["output".to_string()],
+            ))
+            .unwrap();
         let result = graph.connect(node_id, "output".to_string(), node_id, "input".to_string());
         assert!(
             result.is_err(),
             "Expected connecting to the same node to return an error"
         );
+    }
+
+    // ---- imported resources ----
+
+    fn imported(
+        resource_name: &str,
+        initial: ImageLayout,
+        end: ImageLayout,
+    ) -> ResourceDescription {
+        ResourceDescription::Imported {
+            resource_name: resource_name.to_string(),
+            setting: ImportedResourceSetting {
+                initial_layout: initial,
+                end_layout: end,
+            },
+        }
+    }
+
+    fn swapchain() -> ResourceDescription {
+        imported("swapchain", ImageLayout::Undefined, ImageLayout::PresentSrc)
+    }
+
+    fn node_writing(name: &str, resource: &str, description: ResourceDescription) -> GraphNode {
+        GraphNode::new(name.to_string(), TestNode {}).with_resource(
+            resource.to_string(),
+            description,
+            ResourceUsage::ColorAttachment,
+            true,
+        )
+    }
+
+    /// Index of every job touching `resource_id`, flattened across levels, in execution order.
+    fn jobs_touching(graph: &Graph, resource_id: ResourceId) -> Vec<(usize, Job)> {
+        graph
+            .jobs
+            .iter()
+            .flatten()
+            .cloned()
+            .enumerate()
+            .filter(|(_, job)| match job {
+                Job::BarrierJob {
+                    resource_id: id, ..
+                } => *id == resource_id,
+                Job::BufferBarrierJob {
+                    resource_id: id, ..
+                } => *id == resource_id,
+                Job::NodeExecutionJob {
+                    inputs, outputs, ..
+                } => inputs
+                    .iter()
+                    .chain(outputs.iter())
+                    .any(|(_, id)| *id == resource_id),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_imported_resource_is_shared_between_nodes_by_name() {
+        let mut graph = Graph::new([800, 600]);
+        let a = graph
+            .add_node(node_writing("A", "color", swapchain()))
+            .unwrap();
+        // a different node-local name, but the same imported name
+        let b = graph
+            .add_node(node_writing("B", "target", swapchain()))
+            .unwrap();
+
+        let a_id = graph.resource_lookup[&(a, "color".to_string())];
+        let b_id = graph.resource_lookup[&(b, "target".to_string())];
+        assert_eq!(a_id, b_id);
+        assert_eq!(graph.resources.len(), 1);
+        assert_eq!(graph.imported_resources["swapchain"], a_id);
+    }
+
+    #[test]
+    fn test_differently_named_imports_get_separate_resources() {
+        let mut graph = Graph::new([800, 600]);
+        let a = graph
+            .add_node(node_writing("A", "color", swapchain()))
+            .unwrap();
+        let b = graph
+            .add_node(node_writing(
+                "B",
+                "color",
+                imported("other", ImageLayout::Undefined, ImageLayout::PresentSrc),
+            ))
+            .unwrap();
+
+        assert_ne!(
+            graph.resource_lookup[&(a, "color".to_string())],
+            graph.resource_lookup[&(b, "color".to_string())]
+        );
+        assert_eq!(graph.imported_resources.len(), 2);
+    }
+
+    #[test]
+    fn test_imported_resource_does_not_consume_extra_ids() {
+        let mut graph = Graph::new([800, 600]);
+        graph
+            .add_node(node_writing("A", "color", swapchain()))
+            .unwrap();
+        graph
+            .add_node(node_writing("B", "color", swapchain()))
+            .unwrap();
+        let c = graph
+            .add_node(test_named_node(
+                "C".to_string(),
+                vec![],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+
+        // the shared import took one id, so the next regular resource gets the next one
+        let swapchain_id = graph.imported_resources["swapchain"];
+        assert_eq!(
+            graph.resource_lookup[&(c, "out".to_string())],
+            swapchain_id + 1
+        );
+    }
+
+    #[test]
+    fn test_imported_resource_mismatching_settings_returns_err() {
+        let mut graph = Graph::new([800, 600]);
+        graph
+            .add_node(node_writing("A", "color", swapchain()))
+            .unwrap();
+
+        let result = graph.add_node(node_writing(
+            "B",
+            "color",
+            imported(
+                "swapchain",
+                ImageLayout::Undefined,
+                ImageLayout::ShaderReadOnlyOptimal,
+            ),
+        ));
+        assert!(matches!(
+            result,
+            Err(GraphBuildError::ImportedResourceSettingMismatch { resource_name })
+                if resource_name == "swapchain"
+        ));
+
+        let result = graph.add_node(node_writing(
+            "C",
+            "color",
+            imported(
+                "swapchain",
+                ImageLayout::ColorAttachmentOptimal,
+                ImageLayout::PresentSrc,
+            ),
+        ));
+        assert!(matches!(
+            result,
+            Err(GraphBuildError::ImportedResourceSettingMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn test_imported_resource_can_feed_texture_input() {
+        let mut graph = Graph::new([800, 600]);
+        let source = graph
+            .add_node(node_writing("Source", "color", swapchain()))
+            .unwrap();
+        let sink = graph
+            .add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
+                "color".to_string(),
+                NodeInputKind::Texture(ImageLayout::ShaderReadOnlyOptimal),
+            ))
+            .unwrap();
+        graph
+            .connect(source, "color".to_string(), sink, "color".to_string())
+            .unwrap();
+
+        assert!(graph.sort().is_ok());
+    }
+
+    #[test]
+    fn test_imported_resource_ends_in_end_layout_after_last_use() {
+        let mut graph = Graph::new([800, 600]);
+        let source = graph
+            .add_node(node_writing("Source", "color", swapchain()))
+            .unwrap();
+        let sink = graph
+            .add_node(GraphNode::new("Sink".to_string(), TestNode {}).with_input(
+                "color".to_string(),
+                NodeInputKind::Texture(ImageLayout::ShaderReadOnlyOptimal),
+            ))
+            .unwrap();
+        graph
+            .connect(source, "color".to_string(), sink, "color".to_string())
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        let swapchain_id = graph.imported_resources["swapchain"];
+        let jobs = jobs_touching(&graph, swapchain_id);
+
+        let last_execution = jobs
+            .iter()
+            .filter(|(_, job)| matches!(job, Job::NodeExecutionJob { .. }))
+            .map(|(index, _)| *index)
+            .max()
+            .expect("the swapchain is used by a node");
+        let (last_job_index, last_job) = jobs.last().unwrap();
+
+        assert!(
+            *last_job_index > last_execution,
+            "the end-layout barrier must come after the last node using the resource, jobs: {jobs:?}"
+        );
+        assert!(
+            matches!(
+                last_job,
+                Job::BarrierJob {
+                    image_layout: ImageLayout::PresentSrc,
+                    ..
+                }
+            ),
+            "the last job on the resource must transition it to its end layout, got {last_job:?}"
+        );
+    }
+
+    #[test]
+    fn test_imported_resource_gets_exactly_one_end_barrier() {
+        let mut graph = Graph::new([800, 600]);
+        graph
+            .add_node(node_writing("A", "color", swapchain()))
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        let swapchain_id = graph.imported_resources["swapchain"];
+        let end_barriers = jobs_touching(&graph, swapchain_id)
+            .iter()
+            .filter(|(_, job)| {
+                matches!(
+                    job,
+                    Job::BarrierJob {
+                        image_layout: ImageLayout::PresentSrc,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(end_barriers, 1);
+    }
+
+    #[test]
+    fn test_regular_resources_get_no_end_barrier() {
+        let mut graph = Graph::new([800, 600]);
+        let source = graph
+            .add_node(test_named_node(
+                "Source".to_string(),
+                vec![],
+                vec!["out".to_string()],
+            ))
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        let out = graph.resource_lookup[&(source, "out".to_string())];
+        let barriers = jobs_touching(&graph, out)
+            .iter()
+            .filter(|(_, job)| matches!(job, Job::BarrierJob { .. }))
+            .count();
+        // only the producer's own attachment barrier
+        assert_eq!(barriers, 1);
+    }
+
+    #[test]
+    fn test_nodes_may_write_the_same_import_in_one_level() {
+        let mut graph = Graph::new([800, 600]);
+        graph
+            .add_node(node_writing("A", "color", swapchain()))
+            .unwrap();
+        graph
+            .add_node(node_writing("B", "color", swapchain()))
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        // several writers to an imported resource are allowed to share a level
+        let swapchain_id = graph.imported_resources["swapchain"];
+        let writers_per_level: Vec<usize> = graph
+            .jobs
+            .iter()
+            .map(|level| {
+                level
+                    .iter()
+                    .filter(|job| match job {
+                        Job::NodeExecutionJob { outputs, .. } => {
+                            outputs.iter().any(|(_, id)| *id == swapchain_id)
+                        }
+                        _ => false,
+                    })
+                    .count()
+            })
+            .collect();
+        assert_eq!(writers_per_level, vec![2]);
     }
 }
