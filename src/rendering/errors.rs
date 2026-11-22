@@ -19,6 +19,8 @@ use std::fmt;
 
 use vulkano::{Validated, ValidationError, VulkanError};
 
+use crate::rendering::graph::graph::{GraphBuildError, GraphError};
+
 #[derive(Debug)]
 pub enum RenderError {
     /// The swapchain no longer matches the surface (e.g. after a resize).
@@ -52,11 +54,23 @@ pub enum RenderError {
         op: &'static str,
         source: Box<ValidationError>,
     },
-
+    GraphError {
+        op: &'static str,
+        source: Box<GraphError>,
+    },
+    GraphBuildError {
+        op: &'static str,
+        source: Box<GraphBuildError>,
+    },
     /// Any other Vulkan failure.
     Vulkan {
         op: &'static str,
         source: VulkanError,
+    },
+    Custom {
+        op: &'static str,
+        message: &'static str,
+        recoverable: bool,
     },
 }
 
@@ -93,6 +107,21 @@ impl RenderError {
             source: Box::new(source),
         }
     }
+
+    pub fn recoverable(&self) -> bool {
+        match *self {
+            RenderError::DeviceLost { .. }
+            | RenderError::OutOfMemory { .. }
+            | RenderError::Initialization { .. }
+            | RenderError::Allocation { .. }
+            | RenderError::GraphError { .. }
+            | RenderError::GraphBuildError { .. }
+            | RenderError::Vulkan { .. }
+            | RenderError::Validation { .. } => false,
+            RenderError::SwapchainOutOfDate | RenderError::BufferNotUploaded { .. } => true,
+            RenderError::Custom { recoverable, .. } => recoverable,
+        }
+    }
 }
 
 impl fmt::Display for RenderError {
@@ -107,6 +136,9 @@ impl fmt::Display for RenderError {
             BufferNotUploaded { name } => write!(f, "buffer '{name}' has no data uploaded"),
             Validation { op, .. } => write!(f, "invalid parameters for {op}"),
             Vulkan { op, .. } => write!(f, "Vulkan call failed during {op}"),
+            GraphError { op, .. } => write!(f, "Graph call failed during {op}"),
+            GraphBuildError { op, .. } => write!(f, "Graph build call failed during {op}"),
+            Custom { op, .. } => write!(f, "Error during {op}"),
         }
     }
 }
@@ -120,10 +152,13 @@ impl Error for RenderError {
             Allocation { source, .. } => Some(source.as_ref()),
             Validation { source, .. } => Some(source.as_ref()),
             Vulkan { source, .. } => Some(source),
+            GraphError { source, .. } => Some(source),
+            GraphBuildError { source, .. } => Some(source),
             SwapchainOutOfDate
             | DeviceLost { .. }
             | OutOfMemory { .. }
-            | BufferNotUploaded { .. } => None,
+            | BufferNotUploaded { .. }
+            | Custom { .. } => None,
         }
     }
 }
@@ -143,6 +178,24 @@ impl<T> RenderResultExt<T> for Result<T, VulkanError> {
 impl<T> RenderResultExt<T> for Result<T, Validated<VulkanError>> {
     fn context(self, op: &'static str) -> Result<T, RenderError> {
         self.map_err(|e| RenderError::from_validated(op, e))
+    }
+}
+
+impl<T> RenderResultExt<T> for Result<T, GraphError> {
+    fn context(self, op: &'static str) -> Result<T, RenderError> {
+        self.map_err(|e| RenderError::GraphError {
+            op,
+            source: Box::new(e),
+        })
+    }
+}
+
+impl<T> RenderResultExt<T> for Result<T, GraphBuildError> {
+    fn context(self, op: &'static str) -> Result<T, RenderError> {
+        self.map_err(|e| RenderError::GraphBuildError {
+            op,
+            source: Box::new(e),
+        })
     }
 }
 

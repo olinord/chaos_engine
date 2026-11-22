@@ -61,7 +61,7 @@ impl QueueKind {
 pub struct GraphNode {
     pub name: String,
     pub queue: QueueKind,
-    pub node_type: Arc<dyn NodeType>,
+    pub node_type: Arc<dyn GraphNodeType>,
     pub input_descriptions: HashMap<String, NodeInputKind>,
     pub resource_descriptions: HashMap<String, ResourceDescription>,
     pub resource_usages: HashMap<String, ResourceUsage>,
@@ -70,12 +70,12 @@ pub struct GraphNode {
 
 // Trait representing a node in the rendering graph.
 // all things related to a single step or operation in the rendering graph.
-pub trait NodeType {
+pub trait GraphNodeType {
     fn execute(&self, ctx: GraphContext) -> Result<(), GraphError>;
 }
 
 impl GraphNode {
-    pub fn new(name: String, node_type: impl NodeType + 'static) -> Self {
+    pub fn new(name: String, node_type: impl GraphNodeType + 'static) -> Self {
         GraphNode {
             name,
             queue: QueueKind::default(),

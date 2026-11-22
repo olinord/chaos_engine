@@ -11,7 +11,6 @@ use vulkano::{
     descriptor_set::allocator::StandardDescriptorSetAllocatorCreateInfo,
     device::{Device, physical::PhysicalDevice},
     memory::allocator::{FreeListAllocator, GenericMemoryAllocator},
-    pipeline::graphics::viewport::Viewport,
     swapchain::{Swapchain, SwapchainCreateInfo},
 };
 
@@ -21,27 +20,10 @@ use crate::rendering::{
     texture::ChaosTexture,
 };
 
-/// Vulkan's clip-space Y points downward while OpenGL/GLM-style projection
-/// matrices assume Y-up. Using a negative-height viewport tells the rasterizer
-/// to flip Y for us, so callers can keep writing standard perspective /
-/// orthographic matrices without per-shader compensation.
-///
-/// Side effect: front-face winding is inverted. All current pipelines use
-/// `CullMode::None`; any future pipeline that enables back-face culling must
-/// set `FrontFace::Clockwise`.
-fn flipped_viewport(width: f32, height: f32) -> Viewport {
-    Viewport {
-        offset: [0.0, height],
-        extent: [width, -height],
-        depth_range: 0.0..=1.0,
-    }
-}
-
 #[derive(Debug)]
 pub struct SwapchainState {
     swapchain: Arc<Swapchain>,
     backbuffers: Vec<Arc<ChaosTexture>>,
-    viewport: Viewport,
 }
 
 #[derive(Debug)]
@@ -65,7 +47,6 @@ impl ChaosRenderContext {
         swapchain: Arc<Swapchain>,
         backbuffers: Vec<Arc<ChaosTexture>>,
         graphic_family_index: u32,
-        viewport_size: [f32; 2],
         mip_lod_bias: f32,
     ) -> ChaosRenderContext {
         let clone = device.clone();
@@ -76,7 +57,6 @@ impl ChaosRenderContext {
             swapchain_state: RwLock::new(SwapchainState {
                 swapchain,
                 backbuffers,
-                viewport: flipped_viewport(viewport_size[0], viewport_size[1]),
             }),
             graphic_family_index,
             mip_lod_bias,
@@ -117,10 +97,6 @@ impl ChaosRenderContext {
 
     pub fn memory_allocator(&self) -> Arc<GenericMemoryAllocator<FreeListAllocator>> {
         self.memory_allocator.clone()
-    }
-
-    pub fn viewport(&self) -> Viewport {
-        self.swapchain_state().viewport.clone()
     }
 
     pub fn graphic_family_index(&self) -> u32 {
@@ -175,7 +151,6 @@ impl ChaosRenderContext {
             .collect::<Result<_, _>>()?;
         state.swapchain = new_swapchain;
         state.backbuffers = new_backbuffers;
-        state.viewport = flipped_viewport(extent[0] as f32, extent[1] as f32);
         Ok(())
     }
 

@@ -1,9 +1,9 @@
 use ash::vk;
 use log::debug;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use vulkano::{
     VulkanError, VulkanLibrary, VulkanObject,
@@ -12,12 +12,10 @@ use vulkano::{
     image::ImageLayout,
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     memory::allocator::StandardMemoryAllocator,
-    pipeline::graphics::viewport::Scissor,
     swapchain::{
         AcquireNextImageInfo, PresentInfo, SemaphorePresentInfo, Surface, SwapchainPresentInfo,
     },
     sync::{
-        AccessFlags, DependencyInfo, ImageMemoryBarrier, PipelineStages,
         fence::{Fence, FenceCreateFlags, FenceCreateInfo},
         semaphore::{Semaphore, SemaphoreCreateInfo},
     },
@@ -28,15 +26,16 @@ use crate::{
     frame_zone,
     rendering::{
         adapters::select_physical_device,
-        command_buffer::{
-            ChaosClearValue, ChaosCommandBuffer, ChaosRenderAttachment,
-            ChaosRenderAttachmentLoadOp, FinishedFrame,
-        },
+        command_buffer::{ChaosCommandBuffer, FinishedFrame},
         context::ChaosRenderContext,
         draw_command::ChaosDrawQueue,
         errors::{RenderError, RenderResultExt},
+        graph::{
+            graph::{Graph, GraphContext, GraphError},
+            node::{GraphNode, GraphNodeType},
+            resource::{ImportedResourceSetting, ResourceDescription, ResourceUsage},
+        },
         swapchain::get_swapchain_and_backbuffers,
-        texture::ChaosTexture,
     },
 };
 
@@ -79,6 +78,32 @@ impl FrameSlot {
     }
 }
 
+struct QueueRendererNodeType {
+    pub draw_queue: Arc<Mutex<ChaosDrawQueue>>,
+}
+
+impl GraphNodeType for QueueRendererNodeType {
+    fn execute(&self, mut ctx: GraphContext) -> Result<(), GraphError> {
+        let mut draw_queue = std::mem::take(&mut *self.draw_queue.lock().unwrap());
+        draw_queue
+            .sort_by_key(|draw_command| (draw_command.render_phase, draw_command.effect_hash));
+
+        // sort the draw queue by sort key, then execute each draw function in order
+        for draw_command in draw_queue {
+            frame_zone!("render draw command");
+            match (draw_command.draw_function)(ctx.command_buffer) {
+                Ok(()) => {}
+                Err(e) if e.recoverable() => ctx.report(format!("Draw command failed {e}")),
+                Err(e) => {
+                    return Err(GraphError::Render(e));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// ChaosRenderer is the main rendering system. It manages the swapchain, command buffers, and frames in flight.
 /// It is responsible for starting and ending frames, submitting command buffers, and handling swapchain recreation.
 #[allow(unused)]
@@ -92,8 +117,8 @@ pub struct ChaosRenderer {
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     directories: HashMap<PathBuf, PathBuf>,
     pending_resize: Option<[u32; 2]>,
-    // Draw command failures that were already logged, so a broken draw doesn't log every frame.
-    reported_draw_errors: HashSet<&'static str>,
+    graph: Graph,
+    draw_queue: Arc<Mutex<ChaosDrawQueue>>,
 }
 
 impl ChaosRenderer {
@@ -201,7 +226,6 @@ impl ChaosRenderer {
             swapchain,
             backbuffers,
             graphic_family_index,
-            [inner_size.width as f32, inner_size.height as f32],
             0.0,
         ));
 
@@ -211,6 +235,28 @@ impl ChaosRenderer {
             FrameSlot::new(device.clone())?,
             FrameSlot::new(device)?,
         ];
+
+        let draw_queue: Arc<Mutex<ChaosDrawQueue>> = Arc::new(Mutex::new(ChaosDrawQueue::new()));
+        let node = GraphNode::new(
+            "Main".to_string(),
+            QueueRendererNodeType {
+                draw_queue: draw_queue.clone(),
+            },
+        )
+        .with_resource(
+            "backbuffer".to_string(),
+            ResourceDescription::Imported {
+                resource_name: "backbuffer".to_string(),
+                setting: ImportedResourceSetting {
+                    initial_layout: ImageLayout::Undefined,
+                    end_layout: ImageLayout::PresentSrc,
+                },
+            },
+            ResourceUsage::ColorAttachment,
+            true,
+        );
+        let mut graph = Graph::new([inner_size.width, inner_size.height]);
+        let _ = graph.add_node(node).context("Creating the graph")?;
 
         Ok(ChaosRenderer {
             render_context: render_context.clone(),
@@ -222,7 +268,8 @@ impl ChaosRenderer {
             command_buffer_allocator,
             directories: directories.clone(),
             pending_resize: None,
-            reported_draw_errors: HashSet::new(),
+            graph,
+            draw_queue,
         })
     }
 
@@ -282,106 +329,35 @@ impl ChaosRenderer {
         // clear the last frame's descriptor set cache
         self.render_context.clear_descriptor_set_cache();
 
-        let backbuffers = self.render_context.backbuffers();
-
-        let image = backbuffers[self.current_image_index as usize].clone();
-
-        self.begin_rendering(image).map(Some)
-    }
-
-    pub fn begin_rendering(
-        &mut self,
-        destination: Arc<ChaosTexture>,
-    ) -> Result<ChaosCommandBuffer, RenderError> {
-        let mut command_buffer = ChaosCommandBuffer::new(
+        let command_buffer = ChaosCommandBuffer::new(
             self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
         )?;
-
-        let dest_image = destination.image();
-        let mut to_attachment = ImageMemoryBarrier::image(dest_image.clone());
-        to_attachment.src_stages = PipelineStages::COLOR_ATTACHMENT_OUTPUT; // matches the submit's wait stage
-        to_attachment.src_access = AccessFlags::empty();
-        to_attachment.dst_stages = PipelineStages::COLOR_ATTACHMENT_OUTPUT;
-        to_attachment.dst_access = AccessFlags::COLOR_ATTACHMENT_WRITE;
-        to_attachment.old_layout = ImageLayout::Undefined; // "don't care about old contents"; we clear anyway
-        to_attachment.new_layout = ImageLayout::ColorAttachmentOptimal;
-        to_attachment.subresource_range = dest_image.clone().subresource_range();
-
-        command_buffer.pipeline_barrier(&DependencyInfo {
-            image_memory_barriers: vec![to_attachment].into(),
-            ..Default::default()
-        });
-        command_buffer.keep(dest_image);
-
-        let color_attachment = Arc::new(ChaosRenderAttachment::new(
-            destination,
-            ChaosRenderAttachmentLoadOp::Clear(ChaosClearValue::Float([0.0, 0.0, 0.0, 1.0])),
-            ImageLayout::ColorAttachmentOptimal,
-            true,
-        ));
-
-        let viewport_extent = self.render_context.viewport().extent;
-        // Framebuffer-space extent is always positive; the viewport uses a
-        // negative height to flip Y (see `flipped_viewport`), which must not
-        // leak into render-area or scissor sizes.
-        let fb_extent = [
-            viewport_extent[0].abs() as u32,
-            viewport_extent[1].abs() as u32,
-        ];
-        // Push the current viewport/scissor to the command buffer so pipelines
-        // built with dynamic viewport state (see `EffectFactory`) pick up the
-        // current window size after a resize.
-        command_buffer
-            .begin_rendering(&[Some(color_attachment)], None, None, Some(fb_extent), None)
-            .set_viewport(self.render_context.viewport())
-            .set_scissor(Scissor {
-                offset: [0, 0],
-                extent: fb_extent,
-            });
-        Ok(command_buffer)
+        Ok(Some(command_buffer))
     }
 
     /// Records every draw command. A failing draw command (e.g. an effect whose buffers were
     /// never uploaded) is skipped and logged once, instead of taking the whole frame down.
-    pub fn render(&mut self, draw_queue: ChaosDrawQueue, command_buffer: &mut ChaosCommandBuffer) {
-        // sort the draw queue by sort key, then execute each draw function in order
-        let mut draw_queue = draw_queue;
-        draw_queue
-            .sort_by_key(|draw_command| (draw_command.render_phase, draw_command.effect_hash));
-        for draw_command in draw_queue {
-            frame_zone!("render draw command");
-            if let Err(error) = (draw_command.draw_function)(command_buffer) {
-                if self.reported_draw_errors.insert(error) {
-                    log::error!("Skipping draw command: {error}");
-                }
-            }
-        }
+    pub fn render(
+        &mut self,
+        draw_queue: ChaosDrawQueue,
+        command_buffer: &mut ChaosCommandBuffer,
+    ) -> Result<(), RenderError> {
+        let backbuffers = self.render_context.backbuffers();
+        let backbuffer = backbuffers[self.current_image_index as usize].clone();
+
+        let destinations = HashMap::from([("backbuffer".to_string(), backbuffer)]);
+
+        *self.draw_queue.lock().unwrap() = draw_queue;
+
+        self.graph
+            .render(&destinations, command_buffer, &self.render_context)
+            .context("rendering the graph")
     }
 
-    pub fn end_frame(&mut self, mut command_buffer: ChaosCommandBuffer) -> Result<(), RenderError> {
+    pub fn end_frame(&mut self, command_buffer: ChaosCommandBuffer) -> Result<(), RenderError> {
         let slot_index = self.current_frame % FRAMES_IN_FLIGHT;
         let image_index = self.current_image_index as usize;
-
-        command_buffer.end_rendering();
-
-        // Transition the backbuffer from attachment layout to the layout the
-        // presentation engine expects.
-        let image = self.render_context.backbuffers()[image_index].image();
-        let mut to_present = ImageMemoryBarrier::image(image.clone());
-        to_present.src_stages = PipelineStages::COLOR_ATTACHMENT_OUTPUT;
-        to_present.src_access = AccessFlags::COLOR_ATTACHMENT_WRITE; // make our writes available
-        to_present.dst_stages = PipelineStages::BOTTOM_OF_PIPE; // nothing in this submit waits on it
-        to_present.dst_access = AccessFlags::empty(); // present is synchronized by the semaphore
-        to_present.old_layout = ImageLayout::ColorAttachmentOptimal;
-        to_present.new_layout = ImageLayout::PresentSrc;
-        to_present.subresource_range = image.subresource_range();
-
-        command_buffer.pipeline_barrier(&DependencyInfo {
-            image_memory_barriers: vec![to_present].into(),
-            ..Default::default()
-        });
-        command_buffer.keep(image);
 
         let finished = command_buffer.finish()?;
 
@@ -505,6 +481,10 @@ impl ChaosRenderer {
                 .context("creating a render finished semaphore")?,
             ));
         }
+
+        self.graph.set_display_size(extent);
+        // no upscaling is supported rn
+        self.graph.set_render_size(extent);
         Ok(())
     }
 }

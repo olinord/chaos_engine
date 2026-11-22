@@ -443,13 +443,9 @@ impl UiRenderBackend for VulkanUiBackend {
                 draw_function: Box::new(move |command_buffer| {
                     let effect_guard = effect.lock().expect("ui effect lock poisoned");
                     let quad_guard = quad_buffer.lock().expect("ui quad buffer lock poisoned");
-                    effect_guard
-                        .bind_descriptor_sets(command_buffer)
-                        .map_err(|_| "failed to bind ui descriptor sets")?;
+                    effect_guard.bind_descriptor_sets(command_buffer)?;
                     command_buffer.bind_pipeline_graphics(effect_guard.pipeline());
-                    quad_guard
-                        .bind(command_buffer)
-                        .map_err(|_| "failed to bind ui quad vertex buffer")?;
+                    quad_guard.bind(command_buffer)?;
                     command_buffer.draw(6, instance_count, 0, 0);
                     Ok(())
                 }),
@@ -474,13 +470,9 @@ impl UiRenderBackend for VulkanUiBackend {
                         let effect_guard =
                             text_effect.lock().expect("ui text effect lock poisoned");
                         let quad_guard = quad_buffer.lock().expect("ui quad buffer lock poisoned");
-                        effect_guard
-                            .bind_descriptor_sets(command_buffer)
-                            .map_err(|_| "failed to bind ui text descriptor sets")?;
+                        effect_guard.bind_descriptor_sets(command_buffer)?;
                         command_buffer.bind_pipeline_graphics(effect_guard.pipeline());
-                        quad_guard
-                            .bind(command_buffer)
-                            .map_err(|_| "failed to bind ui text quad vertex buffer")?;
+                        quad_guard.bind(command_buffer)?;
                         command_buffer.draw(6, glyph_instance_count, 0, 0);
                         Ok(())
                     }),

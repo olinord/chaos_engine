@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+use vulkano::pipeline::graphics::viewport::{Scissor, Viewport};
 use vulkano::{
     image::ImageLayout,
     sync::{AccessFlags, BufferMemoryBarrier, DependencyInfo, ImageMemoryBarrier, PipelineStages},
@@ -13,6 +14,7 @@ use crate::rendering::command_buffer::{
 };
 use crate::rendering::errors::RenderError;
 use crate::rendering::graph::resource::{ResourceDescription, ResourceUsage};
+use crate::rendering::helpers::{scissor, viewport, viewport_with_offset};
 use crate::rendering::{
     context::ChaosRenderContext,
     graph::{
@@ -245,13 +247,19 @@ impl NodeResources {
             })
     }
 }
+pub(crate) struct GraphContextNodeReport {
+    pub node_name: String,
+    pub message: String,
+}
 
 pub struct GraphContext<'a> {
+    pub node_name: String,
     pub render_size: [u32; 2],
     pub display_size: [u32; 2],
     pub inputs: NodeResources,
     pub node_resources: NodeResources,
     pub command_buffer: &'a mut ChaosCommandBuffer,
+    reports: &'a mut Vec<GraphContextNodeReport>,
 }
 
 impl GraphContext<'_> {
@@ -261,6 +269,13 @@ impl GraphContext<'_> {
 
     pub fn resource(&self, name: &str) -> Result<&Arc<ResourceHandle>, GraphError> {
         self.node_resources.get(name)
+    }
+
+    pub fn report(&mut self, message: impl Into<String>) {
+        self.reports.push(GraphContextNodeReport {
+            node_name: self.node_name.clone(),
+            message: message.into(),
+        });
     }
 }
 
@@ -284,11 +299,13 @@ pub struct Graph {
     jobs: Vec<Vec<Job>>,
     sort_jobs: bool,
     recreate_resources: bool,
-    render_context: Option<Arc<ChaosRenderContext>>,
     render_size: [u32; 2],
     display_size: [u32; 2],
+    viewport_override: Option<Viewport>,
+    scissor_override: Option<Scissor>,
     render_size_changed: bool,
     display_size_changed: bool,
+    reported_errors: HashSet<(String, String)>,
 }
 
 impl Graph {
@@ -305,11 +322,13 @@ impl Graph {
             jobs: Vec::new(),
             sort_jobs: true,
             recreate_resources: true,
-            render_context: None,
             render_size,
             display_size: render_size,
+            viewport_override: None,
+            scissor_override: None,
             render_size_changed: true,
             display_size_changed: true,
+            reported_errors: HashSet::new(),
         }
     }
 
@@ -319,13 +338,20 @@ impl Graph {
         command_buffer: &'a mut ChaosCommandBuffer,
         inputs: &[(String, ResourceId)],
         resources: &[(String, ResourceId)],
+        reports: &'a mut Vec<GraphContextNodeReport>,
     ) -> GraphContext<'a> {
+        let node_name = match self.nodes.get(&node_id) {
+            Some(node) => node.name.clone(),
+            None => unreachable!(),
+        };
         GraphContext {
+            node_name,
             render_size: self.render_size,
             display_size: self.display_size,
             inputs: self.node_resources(node_id, inputs),
             node_resources: self.node_resources(node_id, resources),
             command_buffer,
+            reports,
         }
     }
 
@@ -348,10 +374,6 @@ impl Graph {
         NodeResources::new(entries)
     }
 
-    pub fn initialize(&mut self, render_context: Arc<ChaosRenderContext>) {
-        self.render_context = Some(render_context);
-    }
-
     pub fn set_render_size(&mut self, render_size: [u32; 2]) {
         if self.render_size == render_size {
             return;
@@ -368,6 +390,25 @@ impl Graph {
         self.display_size = display_size;
         self.recreate_resources = true;
         self.display_size_changed = true;
+    }
+
+    pub fn set_viewport_override(&mut self, size: [f32; 2], offset: Option<[f32; 2]>) {
+        self.viewport_override = Some(match offset {
+            Some(o) => viewport_with_offset(size, o),
+            None => viewport(size),
+        });
+    }
+
+    pub fn remove_viewport_override(&mut self) {
+        self.viewport_override = None;
+    }
+
+    pub fn set_scissor_override(&mut self, extent: [u32; 2], offset: [u32; 2]) {
+        self.scissor_override = Some(scissor(extent, offset));
+    }
+
+    pub fn remove_scissor(&mut self) {
+        self.scissor_override = None;
     }
 
     // nodes are moved into the graph so they don't get updated outside of the graph
@@ -574,6 +615,7 @@ impl Graph {
     /// Compiles the graph into jobs. Fails with every problem `validate` and the cycle check
     /// found; once it succeeds, executing the jobs can assume a valid graph.
     fn sort(&mut self) -> Result<(), GraphError> {
+        self.reported_errors.clear();
         let mut problems = self.validate();
 
         let (parents, children) = self.create_hierarchy();
@@ -714,46 +756,7 @@ impl Graph {
     ) -> Result<(), GraphError> {
         // important to create resources before jobs
         if self.recreate_resources {
-            for (resource_id, resource_handle) in self.resources.iter_mut() {
-                let dependant_on_render_size = match &resource_handle.description {
-                    ResourceDescription::Texture(desc) => {
-                        desc.dimension_calculations.iter().any(|dim| {
-                            *dim == TextureSizeType::PercentageOfRenderWidth
-                                || *dim == TextureSizeType::PercentageOfRenderHeight
-                        })
-                    }
-                    _ => false,
-                };
-
-                let dependant_on_display_size = match &resource_handle.description {
-                    ResourceDescription::Texture(desc) => {
-                        desc.dimension_calculations.iter().any(|dim| {
-                            *dim == TextureSizeType::PercentageOfDisplayWidth
-                                || *dim == TextureSizeType::PercentageOfDisplayHeight
-                        })
-                    }
-                    _ => false,
-                };
-
-                let recreate_resource = resource_handle.resource.is_none()
-                    || (self.render_size_changed && dependant_on_render_size)
-                    || (self.display_size_changed && dependant_on_display_size);
-
-                if recreate_resource {
-                    let mut new_handle =
-                        ResourceHandle::new(&resource_handle.description, &resource_handle.name);
-                    new_handle.recreate_resource(
-                        self.display_size,
-                        self.render_size,
-                        render_context.clone(),
-                    )?;
-                    *resource_handle = Arc::new(new_handle);
-                    self.layouts.insert(*resource_id, ImageLayout::Undefined);
-                }
-            }
-            self.recreate_resources = false;
-            self.render_size_changed = false;
-            self.display_size_changed = false;
+            self.recreate_resources(render_context)?;
         }
 
         if self.sort_jobs {
@@ -761,29 +764,9 @@ impl Graph {
         }
 
         // bind imported textures for this frame
-        for (name, resource_id) in &self.imported_resources {
-            match destinations.get(name) {
-                Some(texture) => {
-                    let handle = self.resources.get(&resource_id).unwrap();
-                    let initial_layout = match &handle.description {
-                        ResourceDescription::Imported { setting, .. } => setting.initial_layout,
-                        _ => unreachable!(),
-                    };
-                    self.layouts.insert(*resource_id, initial_layout);
-                    let resource =
-                        ResourceHandle::new_with_texture(&handle.description, name, &texture);
-                    self.resources.insert(*resource_id, Arc::new(resource));
-                }
-                None => {
-                    let mut names: Vec<String> = destinations
-                        .keys()
-                        .map(|n| n.clone())
-                        .collect::<Vec<String>>();
-                    names.sort();
-                    return Err(GraphError::UnknownDestination(name.clone(), names));
-                }
-            }
-        }
+        self.bind_imports(destinations)?;
+
+        let mut reports = Vec::<GraphContextNodeReport>::new();
 
         for level in &self.jobs {
             for job in level {
@@ -816,6 +799,7 @@ impl Graph {
                                 node,
                                 inputs,
                                 outputs,
+                                &mut reports,
                             )?;
                         }
                     }
@@ -823,6 +807,93 @@ impl Graph {
             }
         }
 
+        // go over the reports and log errors
+        for report in reports {
+            let name = report.node_name;
+            let message = report.message;
+            let value = (name.clone(), message.clone());
+            if self.reported_errors.insert(value) {
+                log::warn!("Execution failed for graph node '{name}': '{message}'");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn bind_imports(
+        &mut self,
+        destinations: &HashMap<String, Arc<ChaosTexture>>,
+    ) -> Result<(), GraphError> {
+        for (name, resource_id) in &self.imported_resources {
+            match destinations.get(name) {
+                Some(texture) => {
+                    let handle = self.resources.get(&resource_id).unwrap();
+                    let initial_layout = match &handle.description {
+                        ResourceDescription::Imported { setting, .. } => setting.initial_layout,
+                        _ => unreachable!(),
+                    };
+                    self.layouts.insert(*resource_id, initial_layout);
+                    let resource =
+                        ResourceHandle::new_with_texture(&handle.description, name, &texture);
+                    self.resources.insert(*resource_id, Arc::new(resource));
+                }
+                None => {
+                    let mut names: Vec<String> = destinations
+                        .keys()
+                        .map(|n| n.clone())
+                        .collect::<Vec<String>>();
+                    names.sort();
+                    return Err(GraphError::UnknownDestination(name.clone(), names));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn recreate_resources(
+        &mut self,
+        render_context: &Arc<ChaosRenderContext>,
+    ) -> Result<(), GraphError> {
+        for (resource_id, resource_handle) in self.resources.iter_mut() {
+            let dependant_on_render_size = match &resource_handle.description {
+                ResourceDescription::Texture(desc) => {
+                    desc.dimension_calculations.iter().any(|dim| {
+                        *dim == TextureSizeType::PercentageOfRenderWidth
+                            || *dim == TextureSizeType::PercentageOfRenderHeight
+                    })
+                }
+                _ => false,
+            };
+
+            let dependant_on_display_size = match &resource_handle.description {
+                ResourceDescription::Texture(desc) => {
+                    desc.dimension_calculations.iter().any(|dim| {
+                        *dim == TextureSizeType::PercentageOfDisplayWidth
+                            || *dim == TextureSizeType::PercentageOfDisplayHeight
+                    })
+                }
+                _ => false,
+            };
+
+            let recreate_resource = resource_handle.resource.is_none()
+                || (self.render_size_changed && dependant_on_render_size)
+                || (self.display_size_changed && dependant_on_display_size);
+
+            if recreate_resource {
+                let mut new_handle =
+                    ResourceHandle::new(&resource_handle.description, &resource_handle.name);
+                new_handle.recreate_resource(
+                    self.display_size,
+                    self.render_size,
+                    render_context.clone(),
+                )?;
+                *resource_handle = Arc::new(new_handle);
+                self.layouts.insert(*resource_id, ImageLayout::Undefined);
+            }
+        }
+        self.recreate_resources = false;
+        self.render_size_changed = false;
+        self.display_size_changed = false;
         Ok(())
     }
 
@@ -833,6 +904,7 @@ impl Graph {
         node: &Arc<GraphNode>,
         inputs: &[(String, ResourceId)],
         outputs: &[(String, ResourceId)],
+        report: &mut Vec<GraphContextNodeReport>,
     ) -> Result<(), GraphError> {
         let has_rendering = node.has_rendering();
         if has_rendering {
@@ -853,7 +925,7 @@ impl Graph {
                     ResourceUsage::ColorAttachment => {
                         color_attachments.push(Some(resource_handle.as_attachment(
                             ChaosRenderAttachmentLoadOp::Clear(ChaosClearValue::Float([
-                                0.0, 0.0, 0.0, 0.0,
+                                0.0, 0.0, 0.0, 1.0,
                             ])),
                             usage.layout(),
                             true,
@@ -881,11 +953,21 @@ impl Graph {
                 None,
                 None,
             );
+            match &self.viewport_override {
+                Some(vp) => command_buffer.set_viewport(vp.clone()),
+                None => command_buffer
+                    .set_viewport(viewport(self.render_size.map(|number| number as f32))),
+            };
+            match &self.scissor_override {
+                Some(scissor) => command_buffer.set_scissor(scissor.clone()),
+                None => command_buffer.set_scissor(scissor(self.render_size, [0, 0])),
+            };
         }
 
         // the context holds the command buffer borrow, so it is created after begin_rendering
         // and consumed by execute before end_rendering
-        let graph_context = self.graph_context(*graph_node_id, command_buffer, inputs, outputs);
+        let graph_context =
+            self.graph_context(*graph_node_id, command_buffer, inputs, outputs, report);
         node.node_type
             .execute(graph_context)
             .map_err(|error| GraphError::NodeFailed {
@@ -1205,14 +1287,14 @@ fn kind_mismatch(kind: &NodeInputKind, description: &ResourceDescription) -> Opt
 mod tests {
     use super::*;
     use crate::rendering::graph::{
-        node::NodeType,
+        node::GraphNodeType,
         resource::{ImportedResourceSetting, ResourceDescription, ResourceUsage},
     };
     use std::assert_eq;
 
     pub struct TestNode {}
 
-    impl NodeType for TestNode {
+    impl GraphNodeType for TestNode {
         fn execute(&self, _ctx: GraphContext) -> Result<(), GraphError> {
             return Ok(());
         }

@@ -570,10 +570,10 @@ where
         ctx: &Arc<ChaosRenderContext>,
     ) -> Result<(), &'static str> {
         if self.viewport.width <= 0.0 || self.viewport.height <= 0.0 {
-            let vp = ctx.viewport();
+            let swapchain_extent = ctx.swapchain().image_extent();
             self.viewport = UiViewport {
-                width: vp.extent[0].max(1.0),
-                height: vp.extent[1].max(1.0),
+                width: (swapchain_extent[0] as f32).max(1.0),
+                height: (swapchain_extent[1] as f32).max(1.0),
                 scale_factor: if self.viewport.scale_factor > 0.0 {
                     self.viewport.scale_factor
                 } else {

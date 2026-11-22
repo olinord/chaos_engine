@@ -141,7 +141,7 @@ impl ChaosEngine {
 
         let draw_queue = self.world.get_draw_queue(rendering_system.render_context());
 
-        rendering_system.render(draw_queue, &mut buffer);
+        rendering_system.render(draw_queue, &mut buffer)?;
         rendering_system.end_frame(buffer)?;
         Ok(())
     }

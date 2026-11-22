@@ -8,6 +8,7 @@ pub mod effect;
 pub mod effect_factory;
 pub mod errors;
 pub mod graph;
+pub mod helpers;
 pub mod multi_draw_indirect_buffer;
 pub mod renderer;
 pub mod rendering_system;
