@@ -14,6 +14,7 @@ use chaos_engine::{
         draw_command::{ChaosDrawCommand, ChaosDrawQueue, ChaosRenderPhase},
         effect::ChaosEffect,
         effect_factory::{EffectFactory, EffectUsage},
+        errors::RenderResultExt,
         rendering_system::ChaosRenderSystem,
     },
 };
@@ -398,23 +399,17 @@ impl ChaosRenderSystem for ShipSystem {
             draw_function: Box::new(move |command_buffer| {
                 let mut ship_effect = ship_effect
                     .lock()
-                    .map_err(|_| "Failed to lock ship effect")?;
+                    .map_err(|e| format!("lock failed {e}"))
+                    .context("ship effect")?;
                 let ship_buffer = ship_buffer
                     .lock()
-                    .map_err(|_| "Failed to lock ship buffer")?;
-                ship_effect
-                    .set_uniform_data(0, 0, camera_data.clone())
-                    .map_err(|_| "Failed to set uniform data for ship effect")?;
-                ship_effect
-                    .set_uniform_data(0, 1, ship_model)
-                    .map_err(|_| "Failed to set uniform data for ship model")?;
-                ship_effect
-                    .bind_descriptor_sets(command_buffer)
-                    .map_err(|_| "Failed to bind descriptor sets for ship effect")?;
+                    .map_err(|e| format!("lock failed {e}"))
+                    .context("ship buffer")?;
+                ship_effect.set_uniform_data(0, 0, camera_data.clone())?;
+                ship_effect.set_uniform_data(0, 1, ship_model)?;
+                ship_effect.bind_descriptor_sets(command_buffer)?;
                 command_buffer.bind_pipeline_graphics(ship_effect.pipeline());
-                ship_buffer
-                    .bind(0, command_buffer)
-                    .map_err(|_| "Failed to bind ship vertex buffer")?;
+                ship_buffer.bind(0, command_buffer)?;
                 command_buffer.draw(ship_buffer.length(), 1, 0, 0);
                 Ok(())
             }),
@@ -426,24 +421,18 @@ impl ChaosRenderSystem for ShipSystem {
                 draw_function: Box::new(move |command_buffer| {
                     let mut bullet_effect = bullet_effect
                         .lock()
-                        .map_err(|_| "Failed to lock bullet effect")?;
+                        .map_err(|e| format!("lock failed {e}"))
+                        .context("bullet effect")?;
                     let bullet_buffer = bullet_buffer
                         .lock()
-                        .map_err(|_| "Failed to lock bullet buffer")?;
-                    bullet_effect
-                        .set_uniform_data(0, 0, camera_data.clone())
-                        .map_err(|_| "Failed to set uniform data for bullet effect")?;
-                    bullet_effect
-                        .set_storage_data_vec(0, 1, bullet_locations)
-                        .map_err(|_| "Failed to set storage data for bullet effect")?;
-                    bullet_effect
-                        .bind_descriptor_sets(command_buffer)
-                        .map_err(|_| "Failed to bind descriptor sets for bullet effect")?;
+                        .map_err(|e| format!("lock failed {e}"))
+                        .context("bullet buffer")?;
+                    bullet_effect.set_uniform_data(0, 0, camera_data.clone())?;
+                    bullet_effect.set_storage_data_vec(0, 1, bullet_locations)?;
+                    bullet_effect.bind_descriptor_sets(command_buffer)?;
 
                     command_buffer.bind_pipeline_graphics(bullet_effect.pipeline());
-                    bullet_buffer
-                        .bind(0, command_buffer)
-                        .map_err(|_| "Failed to bind bullet vertex buffer")?;
+                    bullet_buffer.bind(0, command_buffer)?;
                     command_buffer.draw(bullet_buffer.length(), bullet_count, 0, 0);
                     Ok(())
                 }),

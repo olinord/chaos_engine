@@ -8,6 +8,7 @@ use chaos_engine::{
         draw_command::{ChaosDrawCommand, ChaosDrawQueue, ChaosRenderPhase},
         effect::ChaosEffect,
         effect_factory::{EffectFactory, EffectUsage},
+        errors::RenderResultExt,
         multi_draw_indirect_buffer::ChaosMultiDrawIndirectBuffer,
         rendering_system::ChaosRenderSystem,
     },
@@ -305,18 +306,16 @@ impl ChaosRenderSystem for AsteroidSystem {
             draw_function: Box::new(move |command_buffer| {
                 let effect_guard = effect
                     .lock()
-                    .map_err(|_| "Failed to lock asteroid effect")?;
-                effect_guard
-                    .bind_descriptor_sets(command_buffer)
-                    .map_err(|_| "Failed to bind descriptor sets for asteroid effect")?;
+                    .map_err(|e| format!("lock error {e}"))
+                    .context("asteroid effect")?;
+                effect_guard.bind_descriptor_sets(command_buffer)?;
                 command_buffer.bind_pipeline_graphics(effect_guard.pipeline());
 
                 let mesh_guard = asteroid_mesh_buffer
                     .lock()
-                    .map_err(|_| "Failed to lock asteroid mesh buffer")?;
-                mesh_guard
-                    .draw(command_buffer)
-                    .map_err(|_| "Failed to draw asteroids")?;
+                    .map_err(|e| format!("lock error {e}"))
+                    .context("asteroid mesh buffer")?;
+                mesh_guard.draw(command_buffer)?;
                 Ok(())
             }),
         });

@@ -69,7 +69,7 @@ pub enum RenderError {
     },
     Custom {
         op: &'static str,
-        message: &'static str,
+        message: String,
         recoverable: bool,
     },
 }
@@ -195,6 +195,26 @@ impl<T> RenderResultExt<T> for Result<T, GraphBuildError> {
         self.map_err(|e| RenderError::GraphBuildError {
             op,
             source: Box::new(e),
+        })
+    }
+}
+
+impl<T> RenderResultExt<T> for Result<T, &'static str> {
+    fn context(self, op: &'static str) -> Result<T, RenderError> {
+        self.map_err(|e| RenderError::Custom {
+            op,
+            message: e.to_string(),
+            recoverable: false,
+        })
+    }
+}
+
+impl<T> RenderResultExt<T> for Result<T, String> {
+    fn context(self, op: &'static str) -> Result<T, RenderError> {
+        self.map_err(|e| RenderError::Custom {
+            op,
+            message: e,
+            recoverable: false,
         })
     }
 }
