@@ -157,7 +157,7 @@ impl ChaosWorld {
         guard.send_message(message)
     }
 
-    pub fn register_for<T: std::hash::Hash>(&mut self, event: T) -> ChaosReceiver {
+    pub fn register_for<T: std::hash::Hash + 'static>(&mut self, event: T) -> ChaosReceiver {
         let mut guard: Result<
             std::sync::MutexGuard<'_, ChaosCommunicator>,
             std::sync::PoisonError<std::sync::MutexGuard<'_, ChaosCommunicator>>,

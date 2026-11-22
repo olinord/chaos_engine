@@ -19,7 +19,7 @@ notify = "6"
 notify-debouncer-mini = "0.4"
 fontdue = "0.9"
 tracy-client = { version = "=0.18.4", optional = true }
-chaos_communicator={ git="https://github.com/olinord/chaos_communicator", rev="40b9fc5"}
+chaos_communicator={ git="https://github.com/olinord/chaos_communicator", rev="23bc6e6"}
 
 [features]
 profiling = ["dep:tracy-client"]
