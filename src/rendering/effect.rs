@@ -58,7 +58,7 @@ impl ChaosEffect {
         self.pipeline_bind_point = bind_point;
     }
 
-    pub fn set_uniform_data<T: BufferContents>(
+    pub fn set_uniform_data<T: BufferContents + Copy>(
         &mut self,
         set_index: u32,
         binding_index: u32,
@@ -93,11 +93,11 @@ impl ChaosEffect {
         Ok(())
     }
 
-    pub fn set_uniform_data_vec<T: BufferContents>(
+    pub fn set_uniform_data_slice<T: BufferContents + Copy>(
         &mut self,
         set_index: u32,
         binding_index: u32,
-        data: Vec<T>,
+        data: &[T],
     ) -> Result<(), RenderError> {
         let binding = DescriptorBinding {
             set_index,
@@ -124,11 +124,11 @@ impl ChaosEffect {
                     .expect("uniform buffer was inserted above")
             }
         };
-        buffer.set_data_from_vec(data)?;
+        buffer.set_data_from_slice(data)?;
         Ok(())
     }
 
-    pub fn set_storage_data<T: BufferContents>(
+    pub fn set_storage_data<T: BufferContents + Copy>(
         &mut self,
         set_index: u32,
         binding_index: u32,
@@ -163,11 +163,11 @@ impl ChaosEffect {
         Ok(())
     }
 
-    pub fn set_storage_data_vec<T: BufferContents>(
+    pub fn set_storage_data_slice<T: BufferContents + Copy>(
         &mut self,
         set_index: u32,
         binding_index: u32,
-        data: Vec<T>,
+        data: &[T],
     ) -> Result<(), RenderError> {
         let buffer = match self.storage_buffers.get_mut(&DescriptorBinding {
             set_index,
@@ -202,7 +202,7 @@ impl ChaosEffect {
                     .expect("storage buffer was inserted above")
             }
         };
-        buffer.set_data_from_vec(data)?;
+        buffer.set_data_from_slice(data)?;
         Ok(())
     }
 
@@ -221,10 +221,7 @@ impl ChaosEffect {
         let add =
             |binding_index: u32, buffer: &ChaosBuffer, writes: &mut Vec<WriteDescriptorSet>| {
                 if let Some(buffer) = buffer.buffer() {
-                    writes.push(WriteDescriptorSet::buffer(
-                        binding_index,
-                        buffer.as_ref().clone(),
-                    ));
+                    writes.push(WriteDescriptorSet::buffer(binding_index, buffer.clone()));
                 }
             };
 
@@ -291,7 +288,7 @@ impl ChaosEffect {
                     let buffer = buffer.buffer()?;
                     Some(WriteDescriptorSet::buffer(
                         binding.binding_index,
-                        buffer.as_ref().clone(),
+                        buffer.clone(),
                     ))
                 })
                 .collect::<Vec<_>>();
@@ -339,7 +336,7 @@ fn hash_buffer_bindings(
         tag.hash(hasher);
         key.hash(hasher);
         if let Some(buffer) = buffers[key].buffer() {
-            Arc::as_ptr(&buffer).hash(hasher);
+            buffer.hash(hasher);
         }
     }
 }

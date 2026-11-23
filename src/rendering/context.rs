@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use vulkano::descriptor_set::{
     DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
@@ -34,7 +37,7 @@ pub struct ChaosRenderContext {
     swapchain_state: RwLock<SwapchainState>,
     graphic_family_index: u32,
     mip_lod_bias: f32,
-    frame_index: usize,
+    frame_index: AtomicUsize,
     descriptor_set_cache: Mutex<HashMap<u64, Arc<DescriptorSet>>>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
 }
@@ -60,7 +63,7 @@ impl ChaosRenderContext {
             }),
             graphic_family_index,
             mip_lod_bias,
-            frame_index: 0,
+            frame_index: AtomicUsize::new(0),
             descriptor_set_cache: Mutex::new(HashMap::new()),
             descriptor_set_allocator: Arc::new(StandardDescriptorSetAllocator::new(
                 clone,
@@ -112,11 +115,11 @@ impl ChaosRenderContext {
     }
 
     pub fn frame_index(&self) -> usize {
-        self.frame_index
+        self.frame_index.load(Ordering::Relaxed)
     }
 
-    pub fn increment_frame_index(&mut self) {
-        self.frame_index += 1;
+    pub fn increment_frame_index(&self) {
+        self.frame_index.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn create_sampler(

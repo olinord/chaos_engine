@@ -38,7 +38,7 @@ pub enum ChaosBufferMemoryType {
 #[derive(Debug, Clone)]
 pub struct ChaosBuffer {
     pub name: String,
-    buffer: Option<Arc<Subbuffer<[u8]>>>,
+    buffer: Option<Subbuffer<[u8]>>,
     usage: ChaosBufferUsage,
     memory_type_filter: ChaosBufferMemoryType,
     length: usize,
@@ -48,7 +48,7 @@ pub struct ChaosBuffer {
 #[derive(Debug, Clone)]
 pub struct ChaosVertexBuffer<V: Vertex> {
     pub name: String,
-    buffer: Option<Arc<Subbuffer<[V]>>>,
+    buffer: Option<Subbuffer<[V]>>,
     length: usize,
     render_context: Arc<ChaosRenderContext>,
 }
@@ -56,7 +56,7 @@ pub struct ChaosVertexBuffer<V: Vertex> {
 #[derive(Debug, Clone)]
 pub struct ChaosIndexBuffer {
     pub name: String,
-    buffer: Option<Arc<IndexBuffer>>,
+    buffer: Option<IndexBuffer>,
     length: usize,
     render_context: Arc<ChaosRenderContext>,
 }
@@ -78,9 +78,9 @@ impl ChaosBuffer {
         }
     }
 
-    pub fn set_data_from_vec<T: BufferContents>(
+    pub fn set_data_from_slice<T: BufferContents + Copy>(
         &mut self,
-        data: Vec<T>,
+        data: &[T],
     ) -> Result<(), RenderError> {
         self.length = data.len();
 
@@ -94,12 +94,12 @@ impl ChaosBuffer {
                 memory_type_filter: MemoryTypeFilter::from(self.memory_type_filter.clone()),
                 ..Default::default()
             },
-            data.into_iter(),
+            data.iter().copied(),
         );
 
         match buffer {
             Ok(buffer) => {
-                self.buffer = Some(Arc::new(buffer.into_bytes()));
+                self.buffer = Some(buffer.into_bytes());
                 Ok(())
             }
             Err(error) => {
@@ -110,12 +110,12 @@ impl ChaosBuffer {
         }
     }
 
-    pub fn set_data<T: BufferContents>(&mut self, data: T) -> Result<(), RenderError> {
-        self.set_data_from_vec(vec![data])
+    pub fn set_data<T: BufferContents + Copy>(&mut self, data: T) -> Result<(), RenderError> {
+        self.set_data_from_slice(std::slice::from_ref(&data))
     }
 
-    pub fn buffer(&self) -> Option<Arc<Subbuffer<[u8]>>> {
-        self.buffer.clone()
+    pub fn buffer(&self) -> Option<&Subbuffer<[u8]>> {
+        self.buffer.as_ref()
     }
 
     pub fn length(&self) -> u32 {
@@ -128,7 +128,7 @@ impl ChaosBuffer {
         command_buffer: &mut ChaosCommandBuffer,
     ) -> Result<(), RenderError> {
         if let Some(buffer) = &self.buffer {
-            let buffer = buffer.as_ref().clone();
+            let buffer = buffer.clone();
             command_buffer.bind_vertex_buffers(index, &[buffer]);
             Ok(())
         } else {
@@ -139,7 +139,7 @@ impl ChaosBuffer {
     }
 }
 
-impl<V: Vertex> ChaosVertexBuffer<V> {
+impl<V: Vertex + Copy> ChaosVertexBuffer<V> {
     pub fn new(name: String, render_context: Arc<ChaosRenderContext>) -> ChaosVertexBuffer<V> {
         ChaosVertexBuffer {
             name,
@@ -149,7 +149,7 @@ impl<V: Vertex> ChaosVertexBuffer<V> {
         }
     }
 
-    pub fn set_data_from_vec(&mut self, data: Vec<V>) -> Result<(), RenderError> {
+    pub fn set_data_from_slice(&mut self, data: &[V]) -> Result<(), RenderError> {
         self.length = data.len();
 
         let buffer = Buffer::from_iter(
@@ -163,12 +163,12 @@ impl<V: Vertex> ChaosVertexBuffer<V> {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            data.into_iter(),
+            data.iter().copied(),
         );
 
         match buffer {
             Ok(buffer) => {
-                self.buffer = Some(Arc::new(buffer));
+                self.buffer = Some(buffer);
                 Ok(())
             }
             Err(error) => {
@@ -180,12 +180,12 @@ impl<V: Vertex> ChaosVertexBuffer<V> {
     }
 
     pub fn set_data(&mut self, data: V) -> Result<(), RenderError> {
-        self.set_data_from_vec(vec![data])
+        self.set_data_from_slice(std::slice::from_ref(&data))
     }
 
     pub fn bind(&self, command_buffer: &mut ChaosCommandBuffer) -> Result<(), RenderError> {
         if let Some(buffer) = &self.buffer {
-            let buffer = buffer.as_ref().clone();
+            let buffer = buffer.clone();
             command_buffer.bind_vertex_buffers(0, &[buffer.into_bytes()]);
             Ok(())
         } else {
@@ -195,8 +195,8 @@ impl<V: Vertex> ChaosVertexBuffer<V> {
         }
     }
 
-    pub fn buffer(&self) -> Option<Arc<Subbuffer<[V]>>> {
-        self.buffer.clone()
+    pub fn buffer(&self) -> Option<&Subbuffer<[V]>> {
+        self.buffer.as_ref()
     }
 
     pub fn length(&self) -> u32 {
@@ -218,7 +218,7 @@ impl ChaosIndexBuffer {
         }
     }
 
-    pub fn set_u8(&mut self, data: Vec<u8>) -> Result<(), RenderError> {
+    pub fn set_u8(&mut self, data: &[u8]) -> Result<(), RenderError> {
         self.length = data.len();
 
         let buffer = Buffer::from_iter(
@@ -232,15 +232,15 @@ impl ChaosIndexBuffer {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            data.into_iter(),
+            data.iter().copied(),
         )
         .map_err(|e| RenderError::allocation(self.name.clone(), e))?;
 
-        self.buffer = Some(Arc::new(IndexBuffer::from(buffer)));
+        self.buffer = Some(IndexBuffer::from(buffer));
         Ok(())
     }
 
-    pub fn set_u16(&mut self, data: Vec<u16>) -> Result<(), RenderError> {
+    pub fn set_u16(&mut self, data: &[u16]) -> Result<(), RenderError> {
         self.length = data.len();
 
         let buffer = Buffer::from_iter(
@@ -254,15 +254,15 @@ impl ChaosIndexBuffer {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            data.into_iter(),
+            data.iter().copied(),
         )
         .map_err(|e| RenderError::allocation(self.name.clone(), e))?;
 
-        self.buffer = Some(Arc::new(IndexBuffer::from(buffer)));
+        self.buffer = Some(IndexBuffer::from(buffer));
         Ok(())
     }
 
-    pub fn set_u32(&mut self, data: Vec<u32>) -> Result<(), RenderError> {
+    pub fn set_u32(&mut self, data: &[u32]) -> Result<(), RenderError> {
         self.length = data.len();
 
         let buffer = Buffer::from_iter(
@@ -276,17 +276,17 @@ impl ChaosIndexBuffer {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            data.into_iter(),
+            data.iter().copied(),
         )
         .map_err(|e| RenderError::allocation(self.name.clone(), e))?;
 
-        self.buffer = Some(Arc::new(IndexBuffer::from(buffer)));
+        self.buffer = Some(IndexBuffer::from(buffer));
         Ok(())
     }
 
     pub fn bind(&self, command_buffer: &mut ChaosCommandBuffer) -> Result<(), RenderError> {
         if let Some(buffer) = &self.buffer {
-            let buffer = buffer.as_ref().clone();
+            let buffer = buffer.clone();
             command_buffer.bind_index_buffer(&buffer);
             Ok(())
         } else {

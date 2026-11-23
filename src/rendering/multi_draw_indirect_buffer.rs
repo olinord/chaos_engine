@@ -27,7 +27,7 @@ pub struct ChaosMultiDrawIndirectBufferSpan {
 /// - On `flush()` reuploads the GPU buffers if anything changed.
 /// - Each `add` returns a `mesh_id` used as `first_instance`; the vertex shader
 ///   reads `gl_BaseInstance` to index per-mesh data (e.g. a model matrix SSBO).
-pub struct ChaosMultiDrawIndirectBuffer<V: Vertex + Clone> {
+pub struct ChaosMultiDrawIndirectBuffer<V: Vertex + Copy> {
     pub name: String,
 
     vertices: Vec<V>,
@@ -42,7 +42,7 @@ pub struct ChaosMultiDrawIndirectBuffer<V: Vertex + Clone> {
     dirty: bool,
 }
 
-impl<V: Vertex + Clone> ChaosMultiDrawIndirectBuffer<V> {
+impl<V: Vertex + Copy> ChaosMultiDrawIndirectBuffer<V> {
     pub fn new(name: impl Into<String>, render_context: Arc<ChaosRenderContext>) -> Self {
         let name = name.into();
         Self {
@@ -135,11 +135,9 @@ impl<V: Vertex + Clone> ChaosMultiDrawIndirectBuffer<V> {
             self.dirty = false;
             return Ok(());
         }
-        self.vertex_buffer
-            .set_data_from_vec(self.vertices.clone())?;
-        self.index_buffer.set_u32(self.indices.clone())?;
-        self.indirect_buffer
-            .set_data_from_vec(self.commands.clone())?;
+        self.vertex_buffer.set_data_from_slice(&self.vertices)?;
+        self.index_buffer.set_u32(&self.indices)?;
+        self.indirect_buffer.set_data_from_slice(&self.commands)?;
         self.dirty = false;
         Ok(())
     }
@@ -147,7 +145,7 @@ impl<V: Vertex + Clone> ChaosMultiDrawIndirectBuffer<V> {
     pub fn indirect_subbuffer(&self) -> Option<Subbuffer<[DrawIndexedIndirectCommand]>> {
         self.indirect_buffer
             .buffer()
-            .map(|arc| (*arc).clone().reinterpret::<[DrawIndexedIndirectCommand]>())
+            .map(|buffer| buffer.clone().reinterpret())
     }
 
     /// Fails with `BufferNotUploaded` if `flush()` hasn't uploaded the meshes yet.

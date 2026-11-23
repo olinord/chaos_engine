@@ -75,6 +75,44 @@ const TRANSPARENT: Color = Color {
     a: 0.0,
 };
 
+const UNIT_QUAD: [UiRectVertex; 6] = [
+    UiRectVertex {
+        corner: Vec2::new(0.0, 0.0),
+    },
+    UiRectVertex {
+        corner: Vec2::new(1.0, 0.0),
+    },
+    UiRectVertex {
+        corner: Vec2::new(1.0, 1.0),
+    },
+    UiRectVertex {
+        corner: Vec2::new(0.0, 0.0),
+    },
+    UiRectVertex {
+        corner: Vec2::new(1.0, 1.0),
+    },
+    UiRectVertex {
+        corner: Vec2::new(0.0, 1.0),
+    },
+];
+
+const UI_RECT_PLACEHOLDER: [UiRectInstance; 1] = [UiRectInstance {
+    rect: [0.0; 4],
+    bg: [0.0; 4],
+    border_color: [0.0; 4],
+    clip_rect: [0.0; 4],
+    params: [0.0; 4],
+}];
+
+const GLYPH_PLACEHOLDER: [UiGlyphInstance; 1] = [UiGlyphInstance {
+    pos_size: [0.0; 4],
+    uv: [0.0; 4],
+    color: [0.0; 4],
+    clip_rect: [0.0; 4],
+}];
+
+const ATLAS_PLACEHOLDER: [u32; 1] = [0u32];
+
 impl UiPainter {
     /// Pre-order walk over `tree` producing a flat `PaintList`. Skips nodes
     /// with `display: none` or `visibility: hidden` (whole subtree). Emits a
@@ -293,7 +331,7 @@ impl VulkanUiBackend {
             .map_err(|e| format!("failed to build ui_rect effect: {e}"))?;
 
         let mut quad = ChaosVertexBuffer::<UiRectVertex>::new("ui-rect-quad".into(), ctx.clone());
-        quad.set_data_from_vec(unit_quad_vertices())
+        quad.set_data_from_slice(&UNIT_QUAD)
             .map_err(|e| format!("failed to upload ui quad: {}", error_chain(&e)))?;
 
         Ok(Self {
@@ -359,20 +397,10 @@ impl UiRenderBackend for VulkanUiBackend {
 
         effect.set_uniform_data(0, 0, projection_uniform_for(viewport))?;
         if !instances.is_empty() {
-            effect.set_storage_data_vec(0, 1, instances)?;
+            effect.set_storage_data_slice(0, 1, &instances)?;
         } else {
             // Vulkano rejects empty storage buffers; keep a placeholder.
-            effect.set_storage_data_vec(
-                0,
-                1,
-                vec![UiRectInstance {
-                    rect: [0.0; 4],
-                    bg: [0.0; 4],
-                    border_color: [0.0; 4],
-                    clip_rect: [0.0; 4],
-                    params: [0.0; 4],
-                }],
-            )?;
+            effect.set_storage_data_slice(0, 1, &UI_RECT_PLACEHOLDER)?;
         }
         drop(effect);
 
@@ -399,25 +427,19 @@ impl UiRenderBackend for VulkanUiBackend {
             },
         )?;
 
-        let placeholder_glyph = UiGlyphInstance {
-            pos_size: [0.0; 4],
-            uv: [0.0; 4],
-            color: [0.0; 4],
-            clip_rect: [0.0; 4],
-        };
         if !glyph_instances.is_empty() {
-            text_effect.set_storage_data_vec(0, 1, glyph_instances)?;
+            text_effect.set_storage_data_slice(0, 1, &glyph_instances)?;
         } else {
-            text_effect.set_storage_data_vec(0, 1, vec![placeholder_glyph])?;
+            text_effect.set_storage_data_slice(0, 1, &GLYPH_PLACEHOLDER)?;
         }
 
         // Upload atlas as packed u32 storage buffer when contents changed.
         if self.atlas.dirty {
             let packed = self.atlas.pack_as_u32();
             if !packed.is_empty() {
-                text_effect.set_storage_data_vec(0, 2, packed)?;
+                text_effect.set_storage_data_slice(0, 2, &packed)?;
             } else {
-                text_effect.set_storage_data_vec(0, 2, vec![0u32])?;
+                text_effect.set_storage_data_slice(0, 2, &ATLAS_PLACEHOLDER)?;
             }
             self.atlas.dirty = false;
         }
@@ -482,21 +504,6 @@ impl UiRenderBackend for VulkanUiBackend {
 
         Ok(())
     }
-}
-
-fn unit_quad_vertices() -> Vec<UiRectVertex> {
-    let c = |x: f32, y: f32| UiRectVertex {
-        corner: Vec2::new(x, y),
-    };
-    vec![
-        c(0.0, 0.0),
-        c(1.0, 0.0),
-        c(1.0, 1.0),
-        c(0.0, 0.0),
-        c(1.0, 1.0),
-        c(0.0, 1.0),
-    ]
-    .into()
 }
 
 fn projection_uniform_for(viewport: UiViewport) -> UiProjectionUniform {

@@ -23,6 +23,7 @@ use vulkano::{
 use winit::{raw_window_handle::DisplayHandle, window::Window};
 
 use crate::{
+    engine_const::FRAMES_IN_FLIGHT,
     frame_zone,
     rendering::{
         adapters::select_physical_device,
@@ -39,10 +40,8 @@ use crate::{
     },
 };
 
-const FRAMES_IN_FLIGHT: usize = 3;
-
 /// FrameSlot holds the resources for a single frame in flight, including the finished frame, fence, and image available semaphore.
-/// It is stored in a FRAMES_IN_FLIGHT-sized array in ChaosRenderer, and is indexed by current_frame % FRAMES_IN_FLIGHT.
+/// It is stored in a FRAMES_IN_FLIGHT-sized array in ChaosRenderer, and is indexed by render_context.frame_index() % FRAMES_IN_FLIGHT.
 /// Before a frame is started we wait for the fence to signal and clear the finished frame. The fence is reset right
 /// before the submit, and after the submit the finished frame is stored in the slot until the fence signals again.
 ///
@@ -110,7 +109,6 @@ impl GraphNodeType for QueueRendererNodeType {
 pub struct ChaosRenderer {
     render_context: Arc<ChaosRenderContext>,
     queue: Arc<Queue>,
-    current_frame: usize,
     current_image_index: u32, // the swapchain image index
     frames: [FrameSlot; FRAMES_IN_FLIGHT],
     render_finished: Vec<Arc<Semaphore>>, // Semaphores to signal when rendering is finished for each frame, indexed by current_image_index
@@ -261,7 +259,6 @@ impl ChaosRenderer {
         Ok(ChaosRenderer {
             render_context: render_context.clone(),
             queue,
-            current_frame: 0,
             current_image_index: 0,
             frames,
             render_finished,
@@ -290,7 +287,7 @@ impl ChaosRenderer {
             }
         }
 
-        let frame = &mut self.frames[self.current_frame % FRAMES_IN_FLIGHT];
+        let frame = &mut self.frames[self.render_context.frame_index() % FRAMES_IN_FLIGHT];
         frame
             .fence
             .wait(None)
@@ -356,7 +353,7 @@ impl ChaosRenderer {
     }
 
     pub fn end_frame(&mut self, command_buffer: ChaosCommandBuffer) -> Result<(), RenderError> {
-        let slot_index = self.current_frame % FRAMES_IN_FLIGHT;
+        let slot_index = self.render_context.frame_index() % FRAMES_IN_FLIGHT;
         let image_index = self.current_image_index as usize;
 
         let finished = command_buffer.finish()?;
@@ -425,6 +422,7 @@ impl ChaosRenderer {
                     .unwrap_or(Ok(false))
                     .context("present swapchain image")
             });
+        self.render_context.increment_frame_index();
 
         match present_result {
             Ok(suboptimal) => {
@@ -439,7 +437,6 @@ impl ChaosRenderer {
             Err(e) => return Err(e),
         }
 
-        self.current_frame = self.current_frame.wrapping_add(1);
         Ok(())
     }
 

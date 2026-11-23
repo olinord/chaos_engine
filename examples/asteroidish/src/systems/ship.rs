@@ -42,14 +42,14 @@ pub enum ShipEvent {
     RotateRight,
 }
 
-#[derive(BufferContents, Vertex)]
+#[derive(BufferContents, Vertex, Clone, Copy)]
 #[repr(C)]
 struct ShipVertex {
     #[format(R32G32_SFLOAT)]
     position: Vec2,
 }
 
-#[derive(BufferContents, Vertex)]
+#[derive(BufferContents, Vertex, Clone, Copy)]
 #[repr(C)]
 struct BulletVertex {
     #[format(R32G32_SFLOAT)]
@@ -298,15 +298,13 @@ impl ChaosRenderSystem for ShipSystem {
                 chaos_engine::rendering::buffer::ChaosBufferMemoryType::PreferDevice,
                 ctx.clone(),
             );
-
+            let ship_vertices = ShapeComponent::ship()
+                .vertices
+                .iter()
+                .map(|pos| ShipVertex { position: *pos })
+                .collect::<Vec<ShipVertex>>();
             buffer
-                .set_data_from_vec(
-                    ShapeComponent::ship()
-                        .vertices
-                        .iter()
-                        .map(|pos| ShipVertex { position: *pos })
-                        .collect::<Vec<ShipVertex>>(),
-                )
+                .set_data_from_slice(&ship_vertices)
                 .map_err(|_| "Failed to set ship vertex buffer data")?;
             Some(Arc::new(Mutex::new(buffer)))
         };
@@ -318,14 +316,13 @@ impl ChaosRenderSystem for ShipSystem {
                 chaos_engine::rendering::buffer::ChaosBufferMemoryType::PreferDevice,
                 ctx.clone(),
             );
+            let bullet_vertices = ShapeComponent::bullet()
+                .vertices
+                .iter()
+                .map(|pos| BulletVertex { position: *pos })
+                .collect::<Vec<BulletVertex>>();
             buffer
-                .set_data_from_vec(
-                    ShapeComponent::bullet()
-                        .vertices
-                        .iter()
-                        .map(|pos| BulletVertex { position: *pos })
-                        .collect::<Vec<BulletVertex>>(),
-                )
+                .set_data_from_slice(&bullet_vertices)
                 .map_err(|_| "Failed to set bullet vertex buffer data")?;
             Some(Arc::new(Mutex::new(buffer)))
         };
@@ -428,7 +425,7 @@ impl ChaosRenderSystem for ShipSystem {
                         .map_err(|e| format!("lock failed {e}"))
                         .context("bullet buffer")?;
                     bullet_effect.set_uniform_data(0, 0, camera_data.clone())?;
-                    bullet_effect.set_storage_data_vec(0, 1, bullet_locations)?;
+                    bullet_effect.set_storage_data_slice(0, 1, &bullet_locations)?;
                     bullet_effect.bind_descriptor_sets(command_buffer)?;
 
                     command_buffer.bind_pipeline_graphics(bullet_effect.pipeline());

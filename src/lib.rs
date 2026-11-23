@@ -6,6 +6,7 @@ extern crate winit;
 pub mod device;
 pub mod ecs;
 pub mod engine;
+pub mod engine_const;
 pub mod errors;
 pub mod logger;
 pub mod math;

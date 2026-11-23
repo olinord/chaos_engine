@@ -238,9 +238,10 @@ impl ChaosRenderSystem for AsteroidSystem {
                     );
             });
 
+        let zero = [Mat4::zero()];
         self.with_effect_mut(|effect| {
             effect
-                .set_storage_data_vec(0, 1, vec![Mat4::zero()])
+                .set_storage_data_slice(0, 1, &zero)
                 .map_err(|_| "Failed to set storage data for asteroid effect")
         })?;
 
@@ -263,15 +264,14 @@ impl ChaosRenderSystem for AsteroidSystem {
         let gpu_data = Self::camera_gpu_data(world)?;
         let effect = self.shared_effect()?;
         let asteroid_mesh_buffer = self.shared_mesh_buffer()?;
-        let location_data = self.location_data.clone();
-        let model_count = location_data.len();
+        let model_count = self.location_data.len();
 
         self.with_effect_mut(|effect| {
             effect
                 .set_uniform_data(0, 0, gpu_data)
                 .map_err(|_| "Failed to set uniform data for asteroid effect")?;
             effect
-                .set_storage_data_vec(0, 1, location_data)
+                .set_storage_data_slice(0, 1, &self.location_data)
                 .map_err(|_| "Failed to set storage data for asteroid effect")
         })?;
 
