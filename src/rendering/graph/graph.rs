@@ -651,7 +651,7 @@ impl Graph {
         imported_resource_ids.sort();
 
         // the places that use the imported resource last, so we can know when to add barriers
-        let mut last_imported_resource_usage: HashMap<ResourceId, usize> = HashMap::new();
+        let mut last_usage_level: HashMap<ResourceId, usize> = HashMap::new();
 
         for (level_index, level) in levels.iter().enumerate() {
             let mut level_jobs: Vec<Job> = vec![];
@@ -665,7 +665,7 @@ impl Graph {
                     let resource_id = *inputs
                         .get(&(node_id, input_name.clone()))
                         .expect("validation ensured this input is connected");
-                    last_imported_resource_usage.insert(resource_id, level_index);
+                    last_usage_level.insert(resource_id, level_index);
 
                     // add a barrier
                     match kind {
@@ -689,7 +689,7 @@ impl Graph {
                         .get(&(node_id, name.clone()))
                         .expect("add_node registers every resource the node declares");
 
-                    last_imported_resource_usage.insert(resource_id, level_index);
+                    last_usage_level.insert(resource_id, level_index);
 
                     // add a barrier
                     level_jobs.push(Job::BarrierJob {
@@ -726,22 +726,17 @@ impl Graph {
         }
 
         // now insert the imported resource barriers when the resource is not used anymore
-        for (resource_id, level_id) in last_imported_resource_usage {
-            let layout = match self
-                .resources
-                .get(&resource_id)
-                .unwrap()
-                .clone()
-                .description
-            {
-                ResourceDescription::Imported { ref setting, .. } => setting.end_layout,
-                _ => continue,
+        for resource_id in imported_resource_ids {
+            let layout = match &self.resources.get(&resource_id).unwrap().description {
+                ResourceDescription::Imported { setting, .. } => setting.end_layout,
+                _ => unreachable!(),
             };
-
-            self.jobs[level_id].push(Job::BarrierJob {
-                resource_id,
-                image_layout: layout,
-            });
+            if let Some(&level_id) = last_usage_level.get(&resource_id) {
+                self.jobs[level_id].push(Job::BarrierJob {
+                    resource_id,
+                    image_layout: layout,
+                });
+            }
         }
 
         self.sort_jobs = false;
@@ -2231,5 +2226,43 @@ mod tests {
             })
             .collect();
         assert_eq!(writers_per_level, vec![2]);
+    }
+
+    #[test]
+    fn test_end_barriers_in_one_level_are_ordered_by_resource_id() {
+        // several imports ending in the same level; with HashMap iteration a lucky order
+        // for all of them is unlikely, so this catches a regression to unordered emission
+        let names = ["e", "b", "d", "a", "c", "f"];
+        let mut graph = Graph::new([800, 600]);
+        for name in names {
+            graph
+                .add_node(node_writing(
+                    &format!("Writer {name}"),
+                    "color",
+                    imported(name, ImageLayout::Undefined, ImageLayout::PresentSrc),
+                ))
+                .unwrap();
+        }
+        assert!(graph.sort().is_ok());
+        assert_eq!(graph.jobs.len(), 1, "independent writers share one level");
+
+        let mut expected: Vec<ResourceId> = graph.imported_resources.values().copied().collect();
+        expected.sort();
+
+        // the end barriers are the last jobs of the level, after every node has run
+        let level = &graph.jobs[0];
+        let tail = &level[level.len() - expected.len()..];
+        let end_barrier_ids: Vec<ResourceId> = tail
+            .iter()
+            .map(|job| match job {
+                Job::BarrierJob {
+                    resource_id,
+                    image_layout: ImageLayout::PresentSrc,
+                } => *resource_id,
+                other => panic!("expected an end-layout barrier, got {other:?}"),
+            })
+            .collect();
+
+        assert_eq!(end_barrier_ids, expected);
     }
 }
