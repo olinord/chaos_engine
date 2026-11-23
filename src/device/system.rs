@@ -510,6 +510,7 @@ impl ChaosBindingContext {
 mod tests {
     use super::*;
     use crate::device::bindings::ChaosDeviceEventMatcher;
+    use chaos_communicator::event::EventKey;
     use winit::keyboard::KeyCode;
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -518,7 +519,7 @@ mod tests {
         Close,
     }
 
-    fn signal_event(key: TriggerEventKey) -> u64 {
+    fn signal_event(key: TriggerEventKey) -> EventKey {
         ChaosMessageBuilder::new().build_for_event(key).get_event()
     }
 
