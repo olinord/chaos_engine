@@ -137,8 +137,8 @@ impl GraphNode {
     pub fn has_rendering(&self) -> bool {
         if self.queue == QueueKind::Graphics {
             self.resource_usages.values().any(|usage| match usage {
-                ResourceUsage::ColorAttachment => true,
-                ResourceUsage::DepthAttachment => true,
+                ResourceUsage::ColorAttachment(_) => true,
+                ResourceUsage::DepthAttachment(_) => true,
                 _ => false,
             })
         } else {

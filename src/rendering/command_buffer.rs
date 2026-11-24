@@ -38,6 +38,7 @@ pub struct FinishedFrame {
     keep_alive: Vec<Arc<dyn Any + Send + Sync>>,
 }
 
+#[derive(Debug, Clone)]
 pub enum ChaosClearValue {
     Float([f32; 4]),
     Int([i32; 4]),
@@ -47,6 +48,7 @@ pub enum ChaosClearValue {
     DepthStencil(f32, u32),
 }
 
+#[derive(Debug, Clone)]
 pub enum ChaosRenderAttachmentLoadOp {
     Load,
     Clear(ChaosClearValue),

@@ -27,7 +27,9 @@ use crate::{
     frame_zone,
     rendering::{
         adapters::select_physical_device,
-        command_buffer::{ChaosCommandBuffer, FinishedFrame},
+        command_buffer::{
+            ChaosClearValue, ChaosCommandBuffer, ChaosRenderAttachmentLoadOp, FinishedFrame,
+        },
         context::ChaosRenderContext,
         draw_command::ChaosDrawQueue,
         errors::{RenderError, RenderResultExt},
@@ -250,10 +252,13 @@ impl ChaosRenderer {
                     end_layout: ImageLayout::PresentSrc,
                 },
             },
-            ResourceUsage::ColorAttachment,
+            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::Clear(
+                ChaosClearValue::Float([0.0, 0.0, 0.0, 1.0]),
+            )),
             true,
         );
-        let mut graph = Graph::new([inner_size.width, inner_size.height]);
+        let mut graph = Graph::new();
+        graph.set_display_size([inner_size.width, inner_size.height]);
         let _ = graph.add_node(node).context("Creating the graph")?;
 
         Ok(ChaosRenderer {

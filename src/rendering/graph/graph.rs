@@ -76,6 +76,15 @@ pub enum GraphBuildError {
         resource_name: String,
     },
     CircularConnection(Vec<String>),
+    InvalidClearValue {
+        node_name: String,
+        resource_name: String,
+        usage: String,
+    },
+    LoadBeforeWrite {
+        node_name: String,
+        resource_name: String,
+    },
 }
 
 /// Errors that can happen while the graph runs.
@@ -164,6 +173,21 @@ impl fmt::Display for GraphBuildError {
             GraphBuildError::ImportedResourceSettingMismatch { resource_name } => write!(
                 f,
                 "imported resource '{resource_name}' is imported twice with mismatching settings"
+            ),
+            GraphBuildError::InvalidClearValue {
+                node_name,
+                resource_name,
+                usage,
+            } => write!(
+                f,
+                "resource '{resource_name}' on node '{node_name}' has an invalid clear value '{usage}'"
+            ),
+            GraphBuildError::LoadBeforeWrite {
+                node_name,
+                resource_name,
+            } => write!(
+                f,
+                "resource '{resource_name}' in node '{node_name}' is loaded before it has been written to"
             ),
         }
     }
@@ -309,7 +333,9 @@ pub struct Graph {
 }
 
 impl Graph {
-    pub fn new(render_size: [u32; 2]) -> Self {
+    pub fn new() -> Self {
+        // have the render_size very small so we can clearly see if the render size is not set
+        let render_size = [100, 100];
         Graph {
             current_node_id: 0,
             current_resource_id: 0,
@@ -608,8 +634,93 @@ impl Graph {
                     });
                 }
             }
+
+            let mut usages: Vec<_> = node.resource_usages.iter().collect();
+            usages.sort_by(|a, b| a.0.cmp(b.0));
+
+            for (resource_name, usage) in usages {
+                match &usage {
+                    ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::Clear(v)) => {
+                        if !matches!(
+                            v,
+                            ChaosClearValue::Float(_)
+                                | ChaosClearValue::Int(_)
+                                | ChaosClearValue::Uint(_)
+                        ) {
+                            problems.push(GraphBuildError::InvalidClearValue {
+                                node_name: node.name.clone(),
+                                resource_name: resource_name.clone(),
+                                usage: format!("{:?}", usage),
+                            });
+                        }
+                    }
+                    ResourceUsage::DepthAttachment(ChaosRenderAttachmentLoadOp::Clear(v)) => {
+                        if !matches!(
+                            v,
+                            ChaosClearValue::Depth(_) | ChaosClearValue::DepthStencil(_, _)
+                        ) {
+                            problems.push(GraphBuildError::InvalidClearValue {
+                                node_name: node.name.clone(),
+                                resource_name: resource_name.clone(),
+                                usage: format!("{:?}", usage),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
         problems
+    }
+
+    fn validate_load_ops(&self, levels: &[Vec<GraphNodeId>]) -> Vec<GraphBuildError> {
+        let mut error_report = vec![];
+        let mut written: HashSet<ResourceId> = self
+            .imported_resources
+            .iter()
+            .filter_map(|(_, resource_id)| match self.resources.get(resource_id) {
+                Some(resource) => match resource.description {
+                    ResourceDescription::Imported { ref setting, .. } => {
+                        if setting.initial_layout != ImageLayout::Undefined {
+                            Some(*resource_id)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                },
+                None => None,
+            })
+            .collect::<HashSet<ResourceId>>();
+
+        for nodes in levels {
+            for node_id in nodes {
+                if let Some(node) = self.nodes.get(node_id) {
+                    let mut usages: Vec<_> = node.resource_usages.iter().collect();
+                    usages.sort_by(|a, b| a.0.cmp(b.0));
+
+                    for (resource_name, usage) in usages {
+                        let resource_id = self.resource_lookup[&(*node_id, resource_name.clone())];
+
+                        let loads = matches!(
+                            usage,
+                            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::Load)
+                                | ResourceUsage::DepthAttachment(ChaosRenderAttachmentLoadOp::Load)
+                        );
+                        if loads && !written.contains(&resource_id) {
+                            error_report.push(GraphBuildError::LoadBeforeWrite {
+                                node_name: node.name.clone(),
+                                resource_name: resource_name.clone(),
+                            });
+                        }
+                        if !loads {
+                            written.insert(resource_id);
+                        }
+                    }
+                }
+            }
+        }
+        error_report
     }
 
     /// Compiles the graph into jobs. Fails with every problem `validate` and the cycle check
@@ -620,6 +731,8 @@ impl Graph {
 
         let (parents, children) = self.create_hierarchy();
         let levels = self.compute_levels(parents, children);
+        let mut load_op_problems = self.validate_load_ops(&levels);
+        problems.append(&mut load_op_problems);
 
         let scheduled: HashSet<GraphNodeId> = levels.iter().flatten().copied().collect();
         if scheduled.len() != self.nodes.len() {
@@ -916,20 +1029,18 @@ impl Graph {
                     .resources
                     .get(id)
                     .expect("sort registers every resource");
-                match *usage {
-                    ResourceUsage::ColorAttachment => {
+                match usage {
+                    ResourceUsage::ColorAttachment(loadop) => {
                         color_attachments.push(Some(resource_handle.as_attachment(
-                            ChaosRenderAttachmentLoadOp::Clear(ChaosClearValue::Float([
-                                0.0, 0.0, 0.0, 1.0,
-                            ])),
+                            loadop.clone(),
                             usage.layout(),
                             true,
                         )));
                     }
-                    ResourceUsage::DepthAttachment => {
+                    ResourceUsage::DepthAttachment(loadop) => {
                         if depth_attachment.is_none() {
                             depth_attachment = Some(resource_handle.as_attachment(
-                                ChaosRenderAttachmentLoadOp::Clear(ChaosClearValue::Depth(1.0f32)),
+                                loadop.clone(),
                                 usage.layout(),
                                 true,
                             ));
@@ -1087,6 +1198,12 @@ impl Graph {
         Ok(())
     }
 
+    /// Builds the parent and child lists that `compute_levels` schedules from.
+    ///
+    /// Edges come from two places:
+    /// - every connection, source -> destination;
+    /// - `resource_order_edges`: nodes that share a resource (in practice an import) are
+    ///   ordered by the order they were added, so they can't race on it.
     fn create_hierarchy(
         &self,
     ) -> (
@@ -1097,17 +1214,70 @@ impl Graph {
             self.nodes.iter().map(|(&id, _)| (id, Vec::new())).collect();
         let mut children: HashMap<GraphNodeId, Vec<GraphNodeId>> = parents.clone();
 
-        for connection in &self.connections {
-            parents
-                .entry(connection.destination_id)
-                .or_default()
-                .push(connection.source_id);
-            children
-                .entry(connection.source_id)
-                .or_default()
-                .push(connection.destination_id);
+        let connection_edges = self
+            .connections
+            .iter()
+            .map(|connection| (connection.source_id, connection.destination_id));
+        let resource_edges = self
+            .resource_order_edges()
+            .into_iter()
+            .map(|(parent, child, _)| (parent, child));
+
+        for (parent, child) in connection_edges.chain(resource_edges) {
+            parents.entry(child).or_default().push(parent);
+            children.entry(parent).or_default().push(child);
         }
+
         (parents, children)
+    }
+
+    /// The ordering edges that come from sharing a resource, as `(parent, child, resource)`,
+    /// sorted and without duplicates.
+    ///
+    /// - Writers: nodes that declare the resource themselves run in add order (node id), so
+    ///   each writer gets an edge to the next one.
+    /// - Readers: a node that reads the resource through a connection reads the version its
+    ///   source wrote. The connection already puts it after that source; this adds an edge to
+    ///   the next writer after the source, so the reader runs before it's overwritten.
+    fn resource_order_edges(&self) -> Vec<(GraphNodeId, GraphNodeId, ResourceId)> {
+        let mut writers: HashMap<ResourceId, Vec<GraphNodeId>> = HashMap::new();
+        for ((node_id, _), resource_id) in &self.resource_lookup {
+            writers.entry(*resource_id).or_default().push(*node_id);
+        }
+
+        let mut edges = vec![];
+        for (resource_id, users) in writers.iter_mut() {
+            // resource_lookup is a HashMap, so sort to get add order; a node can use the same
+            // import under two names, so dedup to avoid a node -> itself edge
+            users.sort();
+            users.dedup();
+            for pair in users.windows(2) {
+                edges.push((pair[0], pair[1], *resource_id));
+            }
+        }
+
+        for connection in &self.connections {
+            // to_mermaid also runs on unvalidated graphs, so skip unknown sources
+            let Some(resource_id) = self
+                .resource_lookup
+                .get(&(connection.source_id, connection.source_resource.clone()))
+            else {
+                continue;
+            };
+            let users = &writers[resource_id];
+            let Ok(source_position) = users.binary_search(&connection.source_id) else {
+                continue;
+            };
+            if let Some(&next_writer) = users.get(source_position + 1) {
+                if next_writer != connection.destination_id {
+                    edges.push((connection.destination_id, next_writer, *resource_id));
+                }
+            }
+        }
+
+        edges.sort_unstable();
+        edges.dedup();
+        edges
     }
 
     /// Groups nodes into dependency levels using Kahn's algorithm: every node in a level only
@@ -1227,6 +1397,29 @@ impl Graph {
             ));
         }
 
+        // ordering that comes from sharing a resource rather than from a connection; drawn
+        // dotted, and skipped where a connection already shows the same edge
+        let connected: HashSet<(GraphNodeId, GraphNodeId)> = self
+            .connections
+            .iter()
+            .map(|connection| (connection.source_id, connection.destination_id))
+            .collect();
+        for (parent, child, resource_id) in self.resource_order_edges() {
+            if connected.contains(&(parent, child)) {
+                continue;
+            }
+            let resource_name = self
+                .imported_resources
+                .iter()
+                .find(|(_, id)| **id == resource_id)
+                .map(|(name, _)| name.clone())
+                .unwrap_or_else(|| format!("resource_{}", resource_id));
+            mermaid.push_str(&format!(
+                "    node_{} -.->|\"{}\"| node_{}\n",
+                parent, resource_name, child
+            ));
+        }
+
         if !self.nodes.is_empty() {
             for queue in QueueKind::ALL {
                 mermaid.push_str(&format!(
@@ -1281,6 +1474,8 @@ fn kind_mismatch(kind: &NodeInputKind, description: &ResourceDescription) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rendering::command_buffer::ChaosClearValue::Float;
+    use crate::rendering::command_buffer::{ChaosClearValue, ChaosRenderAttachmentLoadOp};
     use crate::rendering::graph::{
         node::GraphNodeType,
         resource::{ImportedResourceSetting, ResourceDescription, ResourceUsage},
@@ -1308,7 +1503,7 @@ mod tests {
             node = node.with_resource(
                 output,
                 ResourceDescription::TestTextureResource,
-                ResourceUsage::ColorAttachment,
+                ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
                 true,
             );
         }
@@ -1317,14 +1512,14 @@ mod tests {
 
     #[test]
     fn test_to_mermaid_empty_graph() {
-        let graph = Graph::new([800, 600]);
+        let graph = Graph::new();
         let mermaid = graph.to_mermaid();
         assert_eq!(mermaid, "```mermaid\nflowchart TD\n```");
     }
 
     #[test]
     fn test_to_mermaid_non_empty_graph() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let node_id = graph.add_node(test_node(vec![], vec![])).unwrap();
         let mermaid = graph.to_mermaid();
         assert!(mermaid.contains(format!("node_{}", node_id).as_str()));
@@ -1333,7 +1528,7 @@ mod tests {
 
     #[test]
     fn test_to_mermaid_graph_with_connection() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let source_id = graph
             .add_node(test_named_node(
                 "Source Node".to_string(),
@@ -1366,7 +1561,7 @@ mod tests {
 
     #[test]
     fn test_to_mermaid_groups_parallel_nodes_into_levels() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let root = graph
             .add_node(test_named_node(
                 "Root".to_string(),
@@ -1423,7 +1618,7 @@ mod tests {
 
     #[test]
     fn test_to_mermaid_colours_nodes_by_queue() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let gfx = graph
             .add_node(test_named_node("Gfx".to_string(), vec![], vec![]))
             .unwrap();
@@ -1443,7 +1638,7 @@ mod tests {
 
     #[test]
     fn test_to_mermaid_isolated_nodes_share_first_level() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let a = graph.add_node(test_node(vec![], vec![])).unwrap();
         let b = graph.add_node(test_node(vec![], vec![])).unwrap();
         let (parents, children) = graph.create_hierarchy();
@@ -1452,7 +1647,7 @@ mod tests {
 
     #[test]
     fn test_to_mermaid_marks_cycle_as_unscheduled() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let free = graph
             .add_node(test_named_node("Free".to_string(), vec![], vec![]))
             .unwrap();
@@ -1501,7 +1696,7 @@ mod tests {
 
     #[test]
     fn test_sort_schedules_isolated_nodes_in_id_order() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let ids: Vec<GraphNodeId> = (0..5)
             .map(|_| graph.add_node(test_node(vec![], vec![])).unwrap())
             .collect();
@@ -1512,7 +1707,7 @@ mod tests {
 
     #[test]
     fn test_sort_orders_diamond_by_levels() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let root = graph
             .add_node(test_named_node(
                 "Root".to_string(),
@@ -1582,7 +1777,7 @@ mod tests {
 
     #[test]
     fn test_sort_binds_inputs_by_destination_name_and_outputs_by_own_name() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let source = graph
             .add_node(test_named_node(
                 "Source".to_string(),
@@ -1617,20 +1812,20 @@ mod tests {
 
     #[test]
     fn test_sort_binds_internal_resources_but_does_not_expose_them() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let node = graph
             .add_node(
                 GraphNode::new("Node".to_string(), TestNode {})
                     .with_resource(
                         "exposed".to_string(),
                         ResourceDescription::TestTextureResource,
-                        ResourceUsage::ColorAttachment,
+                        ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
                         true,
                     )
                     .with_resource(
                         "scratch".to_string(),
                         ResourceDescription::TestTextureResource,
-                        ResourceUsage::ColorAttachment,
+                        ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
                         false,
                     ),
             )
@@ -1668,7 +1863,7 @@ mod tests {
 
     #[test]
     fn test_sort_emits_buffer_barrier_for_buffer_inputs() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let source = graph
             .add_node(test_named_node(
                 "Source".to_string(),
@@ -1721,7 +1916,7 @@ mod tests {
 
     #[test]
     fn test_circular_detection() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let node_a = graph
             .add_node(test_named_node(
                 "Node A".to_string(),
@@ -1780,7 +1975,7 @@ mod tests {
 
     #[test]
     fn test_sort_reports_every_problem_at_once() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         // two unconnected inputs on one node, plus a cycle elsewhere
         graph
             .add_node(test_named_node(
@@ -1846,13 +2041,13 @@ mod tests {
 
     #[test]
     fn test_sort_rejects_texture_connected_to_buffer_input() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let source = graph
             .add_node(
                 GraphNode::new("Source".to_string(), TestNode {}).with_resource(
                     "color".to_string(),
                     texture_description(),
-                    ResourceUsage::ColorAttachment,
+                    ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
                     true,
                 ),
             )
@@ -1884,13 +2079,13 @@ mod tests {
 
     #[test]
     fn test_sort_rejects_unsupported_input_layout() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let source = graph
             .add_node(
                 GraphNode::new("Source".to_string(), TestNode {}).with_resource(
                     "color".to_string(),
                     texture_description(),
-                    ResourceUsage::ColorAttachment,
+                    ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
                     true,
                 ),
             )
@@ -1920,7 +2115,7 @@ mod tests {
 
     #[test]
     fn test_connecting_to_same_node_returns_err() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let node_id = graph
             .add_node(test_node(
                 vec!["input".to_string()],
@@ -1955,10 +2150,24 @@ mod tests {
     }
 
     fn node_writing(name: &str, resource: &str, description: ResourceDescription) -> GraphNode {
+        node_using(
+            name,
+            resource,
+            description,
+            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+        )
+    }
+
+    fn node_using(
+        name: &str,
+        resource: &str,
+        description: ResourceDescription,
+        usage: ResourceUsage,
+    ) -> GraphNode {
         GraphNode::new(name.to_string(), TestNode {}).with_resource(
             resource.to_string(),
             description,
-            ResourceUsage::ColorAttachment,
+            usage,
             true,
         )
     }
@@ -1990,7 +2199,7 @@ mod tests {
 
     #[test]
     fn test_imported_resource_is_shared_between_nodes_by_name() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let a = graph
             .add_node(node_writing("A", "color", swapchain()))
             .unwrap();
@@ -2008,7 +2217,7 @@ mod tests {
 
     #[test]
     fn test_differently_named_imports_get_separate_resources() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let a = graph
             .add_node(node_writing("A", "color", swapchain()))
             .unwrap();
@@ -2029,7 +2238,7 @@ mod tests {
 
     #[test]
     fn test_imported_resource_does_not_consume_extra_ids() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         graph
             .add_node(node_writing("A", "color", swapchain()))
             .unwrap();
@@ -2054,7 +2263,7 @@ mod tests {
 
     #[test]
     fn test_imported_resource_mismatching_settings_returns_err() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         graph
             .add_node(node_writing("A", "color", swapchain()))
             .unwrap();
@@ -2091,7 +2300,7 @@ mod tests {
 
     #[test]
     fn test_imported_resource_can_feed_texture_input() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let source = graph
             .add_node(node_writing("Source", "color", swapchain()))
             .unwrap();
@@ -2110,7 +2319,7 @@ mod tests {
 
     #[test]
     fn test_imported_resource_ends_in_end_layout_after_last_use() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let source = graph
             .add_node(node_writing("Source", "color", swapchain()))
             .unwrap();
@@ -2154,7 +2363,7 @@ mod tests {
 
     #[test]
     fn test_imported_resource_gets_exactly_one_end_barrier() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         graph
             .add_node(node_writing("A", "color", swapchain()))
             .unwrap();
@@ -2178,7 +2387,7 @@ mod tests {
 
     #[test]
     fn test_regular_resources_get_no_end_barrier() {
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         let source = graph
             .add_node(test_named_node(
                 "Source".to_string(),
@@ -2198,8 +2407,8 @@ mod tests {
     }
 
     #[test]
-    fn test_nodes_may_write_the_same_import_in_one_level() {
-        let mut graph = Graph::new([800, 600]);
+    fn test_writers_of_the_same_import_are_ordered_by_add_order() {
+        let mut graph = Graph::new();
         graph
             .add_node(node_writing("A", "color", swapchain()))
             .unwrap();
@@ -2208,7 +2417,8 @@ mod tests {
             .unwrap();
         assert!(graph.sort().is_ok());
 
-        // several writers to an imported resource are allowed to share a level
+        // writers of the same imported resource are put in separate levels, in the order they
+        // were added, so their writes don't race
         let swapchain_id = graph.imported_resources["swapchain"];
         let writers_per_level: Vec<usize> = graph
             .jobs
@@ -2225,7 +2435,63 @@ mod tests {
                     .count()
             })
             .collect();
-        assert_eq!(writers_per_level, vec![2]);
+        assert_eq!(writers_per_level, vec![1, 1]);
+    }
+
+    #[test]
+    fn test_clear_then_load_on_same_resource_get_ordered_correctly() {
+        // Clear then Load, no connector. A (Clear) is added before B (Load), both on swapchain().
+        // Expect no LoadBeforeWrite: add order puts A in an earlier level than B, so the clear
+        // always happens first.
+        let node_a = node_using(
+            "A",
+            "color",
+            swapchain(),
+            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::Clear(Float([
+                0.0, 0.0, 0.0, 1.0,
+            ]))),
+        );
+
+        let node_b = node_using(
+            "B",
+            "color",
+            swapchain(),
+            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::Load),
+        );
+        let mut graph = Graph::new();
+        graph.add_node(node_a).unwrap();
+        graph.add_node(node_b).unwrap();
+        assert!(graph.sort().is_ok());
+    }
+
+    #[test]
+    fn test_load_then_clear_on_same_resource_get_ordered_correctly() {
+        // Load then Clear, no connector. B (Load) is added before A (Clear), so add order runs
+        // B first and it loads a swapchain nothing has written yet.
+        let node_a = node_using(
+            "A",
+            "color",
+            swapchain(),
+            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::Clear(Float([
+                0.0, 0.0, 0.0, 1.0,
+            ]))),
+        );
+
+        let node_b = node_using(
+            "B",
+            "color",
+            swapchain(),
+            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::Load),
+        );
+        let mut graph = Graph::new();
+        graph.add_node(node_b).unwrap();
+        graph.add_node(node_a).unwrap();
+        let problems = sort_problems(&mut graph);
+        assert_eq!(
+            load_before_write(&problems),
+            vec![("B", "color")],
+            "got {problems:?}"
+        );
     }
 
     #[test]
@@ -2233,7 +2499,7 @@ mod tests {
         // several imports ending in the same level; with HashMap iteration a lucky order
         // for all of them is unlikely, so this catches a regression to unordered emission
         let names = ["e", "b", "d", "a", "c", "f"];
-        let mut graph = Graph::new([800, 600]);
+        let mut graph = Graph::new();
         for name in names {
             graph
                 .add_node(node_writing(
@@ -2264,5 +2530,501 @@ mod tests {
             .collect();
 
         assert_eq!(end_barrier_ids, expected);
+    }
+
+    fn color_clear(value: ChaosClearValue) -> ResourceUsage {
+        ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::Clear(value))
+    }
+
+    fn depth_clear(value: ChaosClearValue) -> ResourceUsage {
+        ResourceUsage::DepthAttachment(ChaosRenderAttachmentLoadOp::Clear(value))
+    }
+
+    /// Sorts a graph with a single node using `usage` and returns the problems `sort` found.
+    fn problems_for_usage(usage: ResourceUsage) -> Vec<GraphBuildError> {
+        let mut graph = Graph::new();
+        graph
+            .add_node(node_using(
+                "Node",
+                "target",
+                ResourceDescription::TestTextureResource,
+                usage,
+            ))
+            .unwrap();
+        match graph.sort() {
+            Ok(()) => vec![],
+            Err(GraphError::Invalid(problems)) => problems,
+            Err(other) => panic!("expected a build error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_color_attachment_with_depth_clear_value_is_rejected() {
+        let problems = problems_for_usage(color_clear(ChaosClearValue::Depth(1.0)));
+        assert!(
+            matches!(
+                problems.as_slice(),
+                [GraphBuildError::InvalidClearValue { node_name, resource_name, .. }]
+                    if node_name == "Node" && resource_name == "target"
+            ),
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_color_attachment_with_stencil_clear_values_is_rejected() {
+        for value in [
+            ChaosClearValue::Stencil(0),
+            ChaosClearValue::DepthStencil(1.0, 0),
+        ] {
+            let problems = problems_for_usage(color_clear(value.clone()));
+            assert!(
+                matches!(
+                    problems.as_slice(),
+                    [GraphBuildError::InvalidClearValue { .. }]
+                ),
+                "{value:?} on a color attachment, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_depth_attachment_with_color_clear_values_is_rejected() {
+        for value in [
+            ChaosClearValue::Float([0.0, 0.0, 0.0, 1.0]),
+            ChaosClearValue::Int([0; 4]),
+            ChaosClearValue::Uint([0; 4]),
+            ChaosClearValue::Stencil(0),
+        ] {
+            let problems = problems_for_usage(depth_clear(value.clone()));
+            assert!(
+                matches!(
+                    problems.as_slice(),
+                    [GraphBuildError::InvalidClearValue { node_name, resource_name, .. }]
+                        if node_name == "Node" && resource_name == "target"
+                ),
+                "{value:?} on a depth attachment, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_matching_clear_values_are_accepted() {
+        let usages = [
+            color_clear(ChaosClearValue::Float([0.0, 0.0, 0.0, 1.0])),
+            color_clear(ChaosClearValue::Int([0; 4])),
+            color_clear(ChaosClearValue::Uint([0; 4])),
+            depth_clear(ChaosClearValue::Depth(1.0)),
+            depth_clear(ChaosClearValue::DepthStencil(1.0, 0)),
+        ];
+        for usage in usages {
+            let problems = problems_for_usage(usage.clone());
+            assert!(problems.is_empty(), "{usage:?} got {problems:?}");
+        }
+    }
+
+    #[test]
+    fn test_usages_without_clear_values_are_accepted() {
+        // Load is checked by the load-before-write rule, not here, so a single DontCare/Load
+        // node only has to pass the clear-value check
+        let usages = [
+            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+            ResourceUsage::DepthAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+            ResourceUsage::StorageWrite,
+            ResourceUsage::TransferDst,
+        ];
+        for usage in usages {
+            let problems = problems_for_usage(usage.clone());
+            assert!(
+                !problems
+                    .iter()
+                    .any(|p| matches!(p, GraphBuildError::InvalidClearValue { .. })),
+                "{usage:?} got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_every_invalid_clear_value_is_reported() {
+        let mut graph = Graph::new();
+        graph
+            .add_node(
+                GraphNode::new("Node".to_string(), TestNode {})
+                    .with_resource(
+                        "color".to_string(),
+                        ResourceDescription::TestTextureResource,
+                        color_clear(ChaosClearValue::Depth(1.0)),
+                        true,
+                    )
+                    .with_resource(
+                        "depth".to_string(),
+                        ResourceDescription::TestTextureResource,
+                        depth_clear(ChaosClearValue::Float([0.0; 4])),
+                        true,
+                    ),
+            )
+            .unwrap();
+
+        let Err(GraphError::Invalid(problems)) = graph.sort() else {
+            panic!("expected the graph to be invalid");
+        };
+        let names: Vec<&str> = problems
+            .iter()
+            .filter_map(|p| match p {
+                GraphBuildError::InvalidClearValue { resource_name, .. } => {
+                    Some(resource_name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        // sorted by resource name, so the order is stable
+        assert_eq!(names, vec!["color", "depth"]);
+    }
+
+    fn color_load() -> ResourceUsage {
+        ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::Load)
+    }
+
+    fn depth_load() -> ResourceUsage {
+        ResourceUsage::DepthAttachment(ChaosRenderAttachmentLoadOp::Load)
+    }
+
+    /// Names (node, resource) of every `LoadBeforeWrite` in `problems`.
+    fn load_before_write(problems: &[GraphBuildError]) -> Vec<(&str, &str)> {
+        problems
+            .iter()
+            .filter_map(|p| match p {
+                GraphBuildError::LoadBeforeWrite {
+                    node_name,
+                    resource_name,
+                } => Some((node_name.as_str(), resource_name.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn sort_problems(graph: &mut Graph) -> Vec<GraphBuildError> {
+        match graph.sort() {
+            Ok(()) => vec![],
+            Err(GraphError::Invalid(problems)) => problems,
+            Err(other) => panic!("expected a build error, got {other:?}"),
+        }
+    }
+
+    /// A node that uses `description` as "target" with `usage`, and also writes a "link" texture
+    /// so it can be connected to a later node to force a level ordering.
+    fn node_using_with_link(
+        name: &str,
+        description: ResourceDescription,
+        usage: ResourceUsage,
+    ) -> GraphNode {
+        node_using(name, "target", description, usage).with_resource(
+            "link".to_string(),
+            ResourceDescription::TestTextureResource,
+            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+            true,
+        )
+    }
+
+    /// Builds `first -> second`, where `second` reads `first`'s "link", so `first` is in an
+    /// earlier level. Both use the same import as "target".
+    fn two_levels_on_import(
+        first_usage: ResourceUsage,
+        second_usage: ResourceUsage,
+    ) -> Vec<GraphBuildError> {
+        let mut graph = Graph::new();
+        let first = graph
+            .add_node(node_using_with_link("First", swapchain(), first_usage))
+            .unwrap();
+        let second = graph
+            .add_node(
+                node_using("Second", "target", swapchain(), second_usage).with_input(
+                    "link".to_string(),
+                    NodeInputKind::Texture(ImageLayout::ShaderReadOnlyOptimal),
+                ),
+            )
+            .unwrap();
+        graph
+            .connect(first, "link".to_string(), second, "link".to_string())
+            .unwrap();
+        sort_problems(&mut graph)
+    }
+
+    #[test]
+    fn test_load_of_unwritten_resource_is_rejected() {
+        let problems = problems_for_usage(color_load());
+        assert_eq!(
+            load_before_write(&problems),
+            vec![("Node", "target")],
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_depth_load_of_unwritten_resource_is_rejected() {
+        let problems = problems_for_usage(depth_load());
+        assert_eq!(
+            load_before_write(&problems),
+            vec![("Node", "target")],
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_load_of_import_with_undefined_initial_layout_is_rejected() {
+        // an Undefined initial layout means the contents are garbage, so there is nothing to load
+        let mut graph = Graph::new();
+        graph
+            .add_node(node_using("Node", "target", swapchain(), color_load()))
+            .unwrap();
+        let problems = sort_problems(&mut graph);
+        assert_eq!(
+            load_before_write(&problems),
+            vec![("Node", "target")],
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_load_of_import_with_defined_initial_layout_is_accepted() {
+        // the import arrives with contents written outside the graph
+        let mut graph = Graph::new();
+        graph
+            .add_node(node_using(
+                "Node",
+                "target",
+                imported(
+                    "history",
+                    ImageLayout::ColorAttachmentOptimal,
+                    ImageLayout::ColorAttachmentOptimal,
+                ),
+                color_load(),
+            ))
+            .unwrap();
+        let problems = sort_problems(&mut graph);
+        assert!(load_before_write(&problems).is_empty(), "got {problems:?}");
+    }
+
+    #[test]
+    fn test_load_after_write_in_earlier_level_is_accepted() {
+        for first_usage in [
+            color_clear(ChaosClearValue::Float([0.0, 0.0, 0.0, 1.0])),
+            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+        ] {
+            let problems = two_levels_on_import(first_usage.clone(), color_load());
+            assert!(
+                load_before_write(&problems).is_empty(),
+                "{first_usage:?} then Load, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_load_before_write_in_later_level_is_rejected() {
+        let problems = two_levels_on_import(
+            color_load(),
+            color_clear(ChaosClearValue::Float([0.0, 0.0, 0.0, 1.0])),
+        );
+        assert_eq!(
+            load_before_write(&problems),
+            vec![("First", "target")],
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_load_after_load_is_rejected_for_both() {
+        // a Load doesn't count as a write, so a second Load has nothing to load either
+        let problems = two_levels_on_import(color_load(), color_load());
+        assert_eq!(
+            load_before_write(&problems),
+            vec![("First", "target"), ("Second", "target")],
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_connector_against_add_order_on_shared_import_is_a_cycle() {
+        // First is added first, so it must run before Second on the swapchain, but Second
+        // feeds First through a connector
+        let mut graph = Graph::new();
+        let first = graph
+            .add_node(
+                node_using(
+                    "First",
+                    "target",
+                    swapchain(),
+                    ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+                )
+                .with_input(
+                    "link".to_string(),
+                    NodeInputKind::Texture(ImageLayout::ShaderReadOnlyOptimal),
+                ),
+            )
+            .unwrap();
+        let second = graph
+            .add_node(node_using_with_link(
+                "Second",
+                swapchain(),
+                ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+            ))
+            .unwrap();
+        graph
+            .connect(second, "link".to_string(), first, "link".to_string())
+            .unwrap();
+
+        let problems = sort_problems(&mut graph);
+        assert!(
+            problems.iter().any(|p| matches!(
+                p,
+                GraphBuildError::CircularConnection(nodes)
+                    if nodes == &vec!["First".to_string(), "Second".to_string()]
+            )),
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_node_importing_the_same_resource_twice_is_not_a_cycle() {
+        // both local names share one resource id; that must not make the node its own parent
+        let mut graph = Graph::new();
+        graph
+            .add_node(
+                node_using(
+                    "Node",
+                    "a",
+                    swapchain(),
+                    ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+                )
+                .with_resource(
+                    "b".to_string(),
+                    swapchain(),
+                    ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+                    true,
+                ),
+            )
+            .unwrap();
+        let problems = sort_problems(&mut graph);
+        assert!(
+            !problems
+                .iter()
+                .any(|p| matches!(p, GraphBuildError::CircularConnection(_))),
+            "got {problems:?}"
+        );
+    }
+
+    fn reader_of(name: &str, input: &str) -> GraphNode {
+        GraphNode::new(name.to_string(), TestNode {}).with_input(
+            input.to_string(),
+            NodeInputKind::Texture(ImageLayout::ShaderReadOnlyOptimal),
+        )
+    }
+
+    #[test]
+    fn test_reader_of_import_runs_before_the_next_writer() {
+        // Reader reads Source's version of the swapchain, so it has to run before Overwriter
+        // replaces it, even though Overwriter was added before Reader
+        let mut graph = Graph::new();
+        let source = graph
+            .add_node(node_writing("Source", "color", swapchain()))
+            .unwrap();
+        let overwriter = graph
+            .add_node(node_writing("Overwriter", "color", swapchain()))
+            .unwrap();
+        let reader = graph.add_node(reader_of("Reader", "color")).unwrap();
+        graph
+            .connect(source, "color".to_string(), reader, "color".to_string())
+            .unwrap();
+
+        let (parents, children) = graph.create_hierarchy();
+        assert_eq!(
+            graph.compute_levels(parents, children),
+            vec![vec![source], vec![reader], vec![overwriter]]
+        );
+    }
+
+    #[test]
+    fn test_reader_of_last_writer_gets_no_extra_edge() {
+        // nothing overwrites the swapchain after Last, so Reader only depends on its connection
+        let mut graph = Graph::new();
+        let first = graph
+            .add_node(node_writing("First", "color", swapchain()))
+            .unwrap();
+        let last = graph
+            .add_node(node_writing("Last", "color", swapchain()))
+            .unwrap();
+        let reader = graph.add_node(reader_of("Reader", "color")).unwrap();
+        graph
+            .connect(last, "color".to_string(), reader, "color".to_string())
+            .unwrap();
+
+        let swapchain_id = graph.imported_resources["swapchain"];
+        assert_eq!(
+            graph.resource_order_edges(),
+            vec![(first, last, swapchain_id)]
+        );
+    }
+
+    #[test]
+    fn test_reader_of_internal_resource_gets_no_extra_edge() {
+        // a non-imported resource has a single writer, so there's never a next writer
+        let mut graph = Graph::new();
+        let source = graph
+            .add_node(node_writing(
+                "Source",
+                "color",
+                ResourceDescription::TestTextureResource,
+            ))
+            .unwrap();
+        let reader = graph.add_node(reader_of("Reader", "color")).unwrap();
+        graph
+            .connect(source, "color".to_string(), reader, "color".to_string())
+            .unwrap();
+
+        assert!(graph.resource_order_edges().is_empty());
+    }
+
+    #[test]
+    fn test_to_mermaid_draws_resource_ordering_as_dotted_edge() {
+        let mut graph = Graph::new();
+        let a = graph
+            .add_node(node_writing("A", "color", swapchain()))
+            .unwrap();
+        let b = graph
+            .add_node(node_writing("B", "color", swapchain()))
+            .unwrap();
+
+        let mermaid = graph.to_mermaid();
+        assert!(
+            mermaid.contains(&format!("node_{a} -.->|\"swapchain\"| node_{b}")),
+            "{mermaid}"
+        );
+    }
+
+    #[test]
+    fn test_to_mermaid_skips_resource_ordering_already_shown_by_a_connection() {
+        // Source -> Writer is both a connection and an add-order edge on the swapchain; only
+        // the connection is drawn
+        let mut graph = Graph::new();
+        let source = graph
+            .add_node(node_using_with_link(
+                "Source",
+                swapchain(),
+                ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+            ))
+            .unwrap();
+        let writer = graph
+            .add_node(node_writing("Writer", "target", swapchain()).with_input(
+                "link".to_string(),
+                NodeInputKind::Texture(ImageLayout::ShaderReadOnlyOptimal),
+            ))
+            .unwrap();
+        graph
+            .connect(source, "link".to_string(), writer, "link".to_string())
+            .unwrap();
+
+        let mermaid = graph.to_mermaid();
+        assert!(mermaid.contains(&format!("node_{source} -->")), "{mermaid}");
+        assert!(!mermaid.contains("-.->"), "{mermaid}");
     }
 }

@@ -35,8 +35,8 @@ pub struct TextureDescription {
 
 #[derive(Debug, Clone)]
 pub enum ResourceUsage {
-    ColorAttachment,
-    DepthAttachment,
+    ColorAttachment(ChaosRenderAttachmentLoadOp),
+    DepthAttachment(ChaosRenderAttachmentLoadOp),
     StorageWrite,
     TransferDst,
 }
@@ -44,8 +44,8 @@ pub enum ResourceUsage {
 impl ResourceUsage {
     pub fn layout(&self) -> ImageLayout {
         match self {
-            ResourceUsage::ColorAttachment => ImageLayout::ColorAttachmentOptimal,
-            ResourceUsage::DepthAttachment => ImageLayout::DepthStencilAttachmentOptimal,
+            ResourceUsage::ColorAttachment(_) => ImageLayout::ColorAttachmentOptimal,
+            ResourceUsage::DepthAttachment(_) => ImageLayout::DepthStencilAttachmentOptimal,
             ResourceUsage::StorageWrite => ImageLayout::General,
             ResourceUsage::TransferDst => ImageLayout::TransferDstOptimal,
         }
@@ -53,8 +53,8 @@ impl ResourceUsage {
 
     pub fn required_usage(&self) -> ImageUsage {
         match self {
-            ResourceUsage::ColorAttachment => ImageUsage::COLOR_ATTACHMENT,
-            ResourceUsage::DepthAttachment => ImageUsage::DEPTH_STENCIL_ATTACHMENT,
+            ResourceUsage::ColorAttachment(_) => ImageUsage::COLOR_ATTACHMENT,
+            ResourceUsage::DepthAttachment(_) => ImageUsage::DEPTH_STENCIL_ATTACHMENT,
             ResourceUsage::StorageWrite => ImageUsage::STORAGE,
             ResourceUsage::TransferDst => ImageUsage::TRANSFER_DST,
         }
