@@ -13,7 +13,7 @@ use crate::rendering::command_buffer::{
     ChaosClearValue, ChaosCommandBuffer, ChaosRenderAttachment, ChaosRenderAttachmentLoadOp,
 };
 use crate::rendering::errors::RenderError;
-use crate::rendering::graph::resource::{ResourceDescription, ResourceUsage};
+use crate::rendering::graph::resource::{ResourceDescription, ResourceUsage, needs_barrier};
 use crate::rendering::helpers::{scissor, viewport, viewport_with_offset};
 use crate::rendering::{
     context::ChaosRenderContext,
@@ -1087,8 +1087,10 @@ impl Graph {
         Ok(())
     }
 
-    /// Transitions an image to `new_layout`. `sort` validated the layouts and resource kinds
-    /// and `render` created every resource before running jobs, so a failure here is a bug.
+    /// Transitions an image to `new_layout`, or adds a memory barrier without a transition when
+    /// it stays in a writable layout (see `needs_barrier`). `sort` validated the layouts and
+    /// resource kinds and `render` created every resource before running jobs, so a failure
+    /// here is a bug.
     fn add_resource_barrier(
         new_layout: ImageLayout,
         resource_id: ResourceId,
@@ -1100,7 +1102,7 @@ impl Graph {
             .get(&resource_id)
             .copied()
             .unwrap_or(ImageLayout::Undefined);
-        if new_layout == old_layout {
+        if !needs_barrier(old_layout, new_layout) {
             return;
         }
         assert_ne!(

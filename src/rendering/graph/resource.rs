@@ -115,6 +115,28 @@ pub fn layout_scope(layout: ImageLayout) -> Option<(PipelineStages, AccessFlags,
     })
 }
 
+/// Whether moving an image from `old` to `new` needs a pipeline barrier.
+///
+/// A layout change always does. Staying in the same layout needs one too when that layout
+/// allows writes (per `layout_scope`): two color attachment writes, or a `General` storage
+/// write followed by a read, are hazards even though nothing transitions. Only read after read
+/// in a read-only layout, like two `ShaderReadOnlyOptimal` samplers, can skip the barrier.
+///
+/// Nodes don't declare their real access yet, so a writable layout is treated as "the last use
+/// may have written". That's conservative: two readers in `General` still get a barrier.
+pub fn needs_barrier(old: ImageLayout, new: ImageLayout) -> bool {
+    if old != new {
+        return true;
+    }
+    match layout_scope(old) {
+        Some((_stage, _read_access, write_access)) => !write_access.is_empty(),
+        None => {
+            // this is an invalid state that makes create_barrier panic with a message naming the layout
+            true
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ImportedResourceSetting {
     pub initial_layout: ImageLayout,
@@ -280,5 +302,84 @@ mod tests {
         assert_eq!(color_writes, AccessFlags::COLOR_ATTACHMENT_WRITE);
         assert!(layout_scope(ImageLayout::PresentSrc).is_some());
         assert!(layout_scope(ImageLayout::Preinitialized).is_none());
+    }
+
+    /// Layouts a use may write in, so a later use in the same layout has a hazard.
+    const WRITABLE_LAYOUTS: [ImageLayout; 4] = [
+        ImageLayout::ColorAttachmentOptimal,
+        ImageLayout::DepthStencilAttachmentOptimal,
+        ImageLayout::General,
+        ImageLayout::TransferDstOptimal,
+    ];
+
+    /// Layouts that can only be read in, so staying in them is read after read.
+    const READ_ONLY_LAYOUTS: [ImageLayout; 4] = [
+        ImageLayout::ShaderReadOnlyOptimal,
+        ImageLayout::DepthStencilReadOnlyOptimal,
+        ImageLayout::TransferSrcOptimal,
+        ImageLayout::PresentSrc,
+    ];
+
+    #[test]
+    fn test_same_writable_layout_needs_barrier() {
+        // e.g. one node clears the backbuffer and the next one loads it
+        for layout in WRITABLE_LAYOUTS {
+            assert!(needs_barrier(layout, layout), "{layout:?} -> {layout:?}");
+        }
+    }
+
+    #[test]
+    fn test_same_read_only_layout_needs_no_barrier() {
+        for layout in READ_ONLY_LAYOUTS {
+            assert!(!needs_barrier(layout, layout), "{layout:?} -> {layout:?}");
+        }
+    }
+
+    #[test]
+    fn test_layout_change_always_needs_barrier() {
+        let layouts: Vec<ImageLayout> = WRITABLE_LAYOUTS
+            .into_iter()
+            .chain(READ_ONLY_LAYOUTS)
+            .collect();
+        for &old in &layouts {
+            for &new in &layouts {
+                if old != new {
+                    assert!(needs_barrier(old, new), "{old:?} -> {new:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_first_use_after_undefined_needs_barrier() {
+        // imports with an Undefined initial layout and freshly created textures start here
+        for layout in WRITABLE_LAYOUTS.into_iter().chain(READ_ONLY_LAYOUTS) {
+            assert!(
+                needs_barrier(ImageLayout::Undefined, layout),
+                "Undefined -> {layout:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_layout_without_scope_needs_barrier() {
+        // sort rejects these, so needs_barrier says yes and create_barrier panics on them
+        assert!(needs_barrier(
+            ImageLayout::Preinitialized,
+            ImageLayout::Preinitialized
+        ));
+    }
+
+    #[test]
+    fn test_writable_layouts_match_layout_scope() {
+        // keeps the lists above honest if layout_scope changes
+        for layout in WRITABLE_LAYOUTS {
+            let (_, _, writes) = layout_scope(layout).unwrap();
+            assert!(!writes.is_empty(), "{layout:?} should allow writes");
+        }
+        for layout in READ_ONLY_LAYOUTS {
+            let (_, _, writes) = layout_scope(layout).unwrap();
+            assert!(writes.is_empty(), "{layout:?} should be read-only");
+        }
     }
 }

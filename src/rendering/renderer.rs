@@ -459,12 +459,13 @@ impl ChaosRenderer {
     }
 
     fn recreate_swapchain_now(&mut self, extent: [u32; 2]) -> Result<(), RenderError> {
-        // wait for all the frames
+        // Wait for the whole queue, not just the frame fences: presents aren't covered by a fence
+        // and still wait on the render_finished semaphores we're about to destroy.
+        self.queue
+            .with(|mut q| q.wait_idle())
+            .context("wait for the queue to go idle before recreating the swapchain")?;
+
         for frame in &mut self.frames {
-            frame
-                .fence
-                .wait(None)
-                .context("wait for all frames to finish before recreating swapchain")?;
             frame.finished_frame = None; // drop the finished frame so its resources can be freed
         }
 
