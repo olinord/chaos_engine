@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+use vulkano::image::ImageUsage;
 use vulkano::pipeline::graphics::viewport::{Scissor, Viewport};
 use vulkano::{
     image::ImageLayout,
@@ -13,7 +14,9 @@ use crate::rendering::command_buffer::{
     ChaosClearValue, ChaosCommandBuffer, ChaosRenderAttachment, ChaosRenderAttachmentLoadOp,
 };
 use crate::rendering::errors::RenderError;
-use crate::rendering::graph::resource::{ResourceDescription, ResourceUsage, needs_barrier};
+use crate::rendering::graph::resource::{
+    ResourceDescription, ResourceUsage, layout_usage, needs_barrier,
+};
 use crate::rendering::helpers::{scissor, viewport, viewport_with_offset};
 use crate::rendering::{
     context::ChaosRenderContext,
@@ -74,6 +77,11 @@ pub enum GraphBuildError {
     },
     ImportedResourceSettingMismatch {
         resource_name: String,
+    },
+    InvalidImportLayout {
+        resource_name: String,
+        which: &'static str,
+        layout: ImageLayout,
     },
     CircularConnection(Vec<String>),
     InvalidClearValue {
@@ -173,6 +181,14 @@ impl fmt::Display for GraphBuildError {
             GraphBuildError::ImportedResourceSettingMismatch { resource_name } => write!(
                 f,
                 "imported resource '{resource_name}' is imported twice with mismatching settings"
+            ),
+            GraphBuildError::InvalidImportLayout {
+                resource_name,
+                which,
+                layout,
+            } => write!(
+                f,
+                "imported resource '{resource_name}' has an invalid {which} layout {layout:?}"
             ),
             GraphBuildError::InvalidClearValue {
                 node_name,
@@ -317,6 +333,7 @@ pub struct Graph {
     connections: Vec<Connector>,
     resources: HashMap<ResourceId, Arc<ResourceHandle>>,
     resource_lookup: HashMap<(GraphNodeId, String), ResourceId>,
+    required_image_usage: HashMap<ResourceId, ImageUsage>,
     layouts: HashMap<ResourceId, ImageLayout>,
     imported_resources: HashMap<String, ResourceId>,
     // jobs are sorted by levels for multithreaded rendering and async compute
@@ -343,6 +360,7 @@ impl Graph {
             connections: Vec::new(),
             resources: HashMap::new(),
             resource_lookup: HashMap::new(),
+            required_image_usage: HashMap::new(),
             layouts: HashMap::new(),
             imported_resources: HashMap::new(),
             jobs: Vec::new(),
@@ -670,6 +688,36 @@ impl Graph {
                 }
             }
         }
+
+        let mut imports: Vec<_> = self.imported_resources.iter().collect();
+        imports.sort_by(|a, b| a.0.cmp(b.0));
+        for (_, resource_id) in imports {
+            if let Some(resource) = self.resources.get(resource_id) {
+                if let ResourceDescription::Imported {
+                    resource_name,
+                    setting,
+                } = &resource.description
+                {
+                    if layout_scope(setting.end_layout).is_none()
+                        || setting.end_layout == ImageLayout::Undefined
+                    {
+                        problems.push(GraphBuildError::InvalidImportLayout {
+                            resource_name: resource_name.to_string(),
+                            which: "end",
+                            layout: setting.end_layout,
+                        });
+                    }
+                    if layout_scope(setting.initial_layout).is_none() {
+                        problems.push(GraphBuildError::InvalidImportLayout {
+                            resource_name: resource_name.to_string(),
+                            which: "initial",
+                            layout: setting.initial_layout,
+                        });
+                    }
+                }
+            }
+        }
+
         problems
     }
 
@@ -765,6 +813,8 @@ impl Graph {
 
         // the places that use the imported resource last, so we can know when to add barriers
         let mut last_usage_level: HashMap<ResourceId, usize> = HashMap::new();
+        // required usages for the resources
+        let mut required_usage: HashMap<ResourceId, ImageUsage> = HashMap::new();
 
         for (level_index, level) in levels.iter().enumerate() {
             let mut level_jobs: Vec<Job> = vec![];
@@ -779,6 +829,11 @@ impl Graph {
                         .get(&(node_id, input_name.clone()))
                         .expect("validation ensured this input is connected");
                     last_usage_level.insert(resource_id, level_index);
+
+                    if let NodeInputKind::Texture(image_layout) = kind {
+                        *required_usage.entry(resource_id).or_default() |=
+                            layout_usage(*image_layout);
+                    }
 
                     // add a barrier
                     match kind {
@@ -803,6 +858,7 @@ impl Graph {
                         .expect("add_node registers every resource the node declares");
 
                     last_usage_level.insert(resource_id, level_index);
+                    *required_usage.entry(resource_id).or_default() |= usage.required_usage();
 
                     // add a barrier
                     level_jobs.push(Job::BarrierJob {
@@ -851,6 +907,8 @@ impl Graph {
                 });
             }
         }
+
+        self.required_image_usage = required_usage;
 
         self.sort_jobs = false;
         Ok(())
@@ -3028,5 +3086,278 @@ mod tests {
         let mermaid = graph.to_mermaid();
         assert!(mermaid.contains(&format!("node_{source} -->")), "{mermaid}");
         assert!(!mermaid.contains("-.->"), "{mermaid}");
+    }
+
+    /// (resource, which, layout) of every `InvalidImportLayout` in `problems`, sorted so tests
+    /// don't depend on the order initial/end are checked in.
+    fn invalid_import_layouts(problems: &[GraphBuildError]) -> Vec<(&str, &str, ImageLayout)> {
+        let mut found: Vec<(&str, &str, ImageLayout)> = problems
+            .iter()
+            .filter_map(|p| match p {
+                GraphBuildError::InvalidImportLayout {
+                    resource_name,
+                    which,
+                    layout,
+                } => Some((resource_name.as_str(), *which, *layout)),
+                _ => None,
+            })
+            .collect();
+        found.sort_by_key(|(name, which, _)| (*name, *which));
+        found
+    }
+
+    /// Sorts a graph with one node writing an import with the given layouts.
+    fn problems_for_import(initial: ImageLayout, end: ImageLayout) -> Vec<GraphBuildError> {
+        let mut graph = Graph::new();
+        graph
+            .add_node(node_writing(
+                "Node",
+                "color",
+                imported("history", initial, end),
+            ))
+            .unwrap();
+        sort_problems(&mut graph)
+    }
+
+    #[test]
+    fn test_import_with_undefined_end_layout_is_rejected() {
+        // the end barrier would transition into Undefined, which add_resource_barrier asserts on
+        let problems =
+            problems_for_import(ImageLayout::ColorAttachmentOptimal, ImageLayout::Undefined);
+        assert_eq!(
+            invalid_import_layouts(&problems),
+            vec![("history", "end", ImageLayout::Undefined)],
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_import_with_unscoped_end_layout_is_rejected() {
+        // Preinitialized has no layout_scope, so create_barrier would panic on it
+        let problems = problems_for_import(
+            ImageLayout::ColorAttachmentOptimal,
+            ImageLayout::Preinitialized,
+        );
+        assert_eq!(
+            invalid_import_layouts(&problems),
+            vec![("history", "end", ImageLayout::Preinitialized)],
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_import_with_unscoped_initial_layout_is_rejected() {
+        let problems = problems_for_import(ImageLayout::Preinitialized, ImageLayout::PresentSrc);
+        assert_eq!(
+            invalid_import_layouts(&problems),
+            vec![("history", "initial", ImageLayout::Preinitialized)],
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_import_with_undefined_initial_layout_is_accepted() {
+        // Undefined is fine as a starting point: it means the old contents don't matter
+        let problems = problems_for_import(ImageLayout::Undefined, ImageLayout::PresentSrc);
+        assert!(problems.is_empty(), "got {problems:?}");
+    }
+
+    #[test]
+    fn test_import_with_valid_layouts_is_accepted() {
+        let problems = problems_for_import(
+            ImageLayout::ColorAttachmentOptimal,
+            ImageLayout::ShaderReadOnlyOptimal,
+        );
+        assert!(problems.is_empty(), "got {problems:?}");
+    }
+
+    #[test]
+    fn test_import_with_both_layouts_invalid_reports_both() {
+        let problems = problems_for_import(ImageLayout::Preinitialized, ImageLayout::Undefined);
+        assert_eq!(
+            invalid_import_layouts(&problems),
+            vec![
+                ("history", "end", ImageLayout::Undefined),
+                ("history", "initial", ImageLayout::Preinitialized),
+            ],
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_invalid_import_shared_by_nodes_is_reported_once() {
+        // the layouts belong to the import, not to each node using it
+        let bad = || {
+            imported(
+                "history",
+                ImageLayout::ColorAttachmentOptimal,
+                ImageLayout::Undefined,
+            )
+        };
+        let mut graph = Graph::new();
+        graph.add_node(node_writing("A", "color", bad())).unwrap();
+        graph.add_node(node_writing("B", "color", bad())).unwrap();
+        let problems = sort_problems(&mut graph);
+        assert_eq!(
+            invalid_import_layouts(&problems),
+            vec![("history", "end", ImageLayout::Undefined)],
+            "got {problems:?}"
+        );
+    }
+
+    #[test]
+    fn test_invalid_imports_are_reported_in_name_order() {
+        // validate walks imported_resources (a HashMap), so it has to sort to be stable
+        let mut graph = Graph::new();
+        for name in ["e", "b", "d", "a", "c"] {
+            graph
+                .add_node(node_writing(
+                    &format!("Writer {name}"),
+                    "color",
+                    imported(name, ImageLayout::Undefined, ImageLayout::Undefined),
+                ))
+                .unwrap();
+        }
+        let problems = sort_problems(&mut graph);
+        let names: Vec<&str> = problems
+            .iter()
+            .filter_map(|p| match p {
+                GraphBuildError::InvalidImportLayout { resource_name, .. } => {
+                    Some(resource_name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    /// A node that reads "color" through a connection in `layout`.
+    fn reader_in(name: &str, layout: ImageLayout) -> GraphNode {
+        GraphNode::new(name.to_string(), TestNode {})
+            .with_input("color".to_string(), NodeInputKind::Texture(layout))
+    }
+
+    #[test]
+    fn test_required_usage_of_single_writer() {
+        let mut graph = Graph::new();
+        graph
+            .add_node(node_writing("Writer", "color", swapchain()))
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        let swapchain_id = graph.imported_resources["swapchain"];
+        assert_eq!(
+            graph.required_image_usage[&swapchain_id],
+            ImageUsage::COLOR_ATTACHMENT
+        );
+    }
+
+    #[test]
+    fn test_required_usage_includes_sampled_reader() {
+        // the case that would fail on the real swapchain, which only has COLOR_ATTACHMENT
+        let mut graph = Graph::new();
+        let writer = graph
+            .add_node(node_writing("Writer", "color", swapchain()))
+            .unwrap();
+        let reader = graph
+            .add_node(reader_in("Reader", ImageLayout::ShaderReadOnlyOptimal))
+            .unwrap();
+        graph
+            .connect(writer, "color".to_string(), reader, "color".to_string())
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        let swapchain_id = graph.imported_resources["swapchain"];
+        assert_eq!(
+            graph.required_image_usage[&swapchain_id],
+            ImageUsage::COLOR_ATTACHMENT | ImageUsage::SAMPLED
+        );
+    }
+
+    #[test]
+    fn test_required_usage_of_general_reader_is_storage() {
+        let mut graph = Graph::new();
+        let writer = graph
+            .add_node(node_writing("Writer", "color", swapchain()))
+            .unwrap();
+        let reader = graph
+            .add_node(reader_in("Reader", ImageLayout::General))
+            .unwrap();
+        graph
+            .connect(writer, "color".to_string(), reader, "color".to_string())
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        let swapchain_id = graph.imported_resources["swapchain"];
+        assert_eq!(
+            graph.required_image_usage[&swapchain_id],
+            ImageUsage::COLOR_ATTACHMENT | ImageUsage::STORAGE
+        );
+    }
+
+    #[test]
+    fn test_required_usage_combines_every_user_of_an_import() {
+        let mut graph = Graph::new();
+        graph
+            .add_node(node_writing("Draw", "color", swapchain()))
+            .unwrap();
+        graph
+            .add_node(node_using(
+                "Copy",
+                "color",
+                swapchain(),
+                ResourceUsage::TransferDst,
+            ))
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        let swapchain_id = graph.imported_resources["swapchain"];
+        assert_eq!(
+            graph.required_image_usage[&swapchain_id],
+            ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_DST
+        );
+    }
+
+    #[test]
+    fn test_required_usage_is_collected_for_internal_resources_too() {
+        // graph-owned textures get an entry as well, so Open work 9 can check them later
+        let mut graph = Graph::new();
+        let node = graph
+            .add_node(node_writing(
+                "Writer",
+                "color",
+                ResourceDescription::TestTextureResource,
+            ))
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        let id = graph.resource_lookup[&(node, "color".to_string())];
+        assert_eq!(
+            graph.required_image_usage[&id],
+            ImageUsage::COLOR_ATTACHMENT
+        );
+    }
+
+    #[test]
+    fn test_required_usage_is_updated_when_graph_changes() {
+        // a node added after the first sort shows up after the next one
+        let mut graph = Graph::new();
+        let writer = graph
+            .add_node(node_writing("Writer", "color", swapchain()))
+            .unwrap();
+        assert!(graph.sort().is_ok());
+        let reader = graph
+            .add_node(reader_in("Reader", ImageLayout::ShaderReadOnlyOptimal))
+            .unwrap();
+        graph
+            .connect(writer, "color".to_string(), reader, "color".to_string())
+            .unwrap();
+        assert!(graph.sort().is_ok());
+
+        let swapchain_id = graph.imported_resources["swapchain"];
+        assert_eq!(
+            graph.required_image_usage[&swapchain_id],
+            ImageUsage::COLOR_ATTACHMENT | ImageUsage::SAMPLED
+        );
     }
 }

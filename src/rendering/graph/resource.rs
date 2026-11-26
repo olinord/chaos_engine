@@ -115,6 +115,27 @@ pub fn layout_scope(layout: ImageLayout) -> Option<(PipelineStages, AccessFlags,
     })
 }
 
+/// The `ImageUsage` an image must have been created with to be used in `layout`. Empty for
+/// layouts that need no usage flag (`Undefined`, `PresentSrc`, ...).
+///
+/// `DepthStencilReadOnlyOptimal` maps to `SAMPLED`, because the graph only uses it for node
+/// inputs, which are shader reads. A read-only depth *attachment* would need
+/// `DEPTH_STENCIL_ATTACHMENT` instead.
+///
+/// For every `ResourceUsage`, `layout_usage(usage.layout())` equals `usage.required_usage()`.
+pub fn layout_usage(layout: ImageLayout) -> ImageUsage {
+    match layout {
+        ImageLayout::ShaderReadOnlyOptimal => ImageUsage::SAMPLED,
+        ImageLayout::DepthStencilReadOnlyOptimal => ImageUsage::SAMPLED,
+        ImageLayout::General => ImageUsage::STORAGE,
+        ImageLayout::TransferDstOptimal => ImageUsage::TRANSFER_DST,
+        ImageLayout::TransferSrcOptimal => ImageUsage::TRANSFER_SRC,
+        ImageLayout::ColorAttachmentOptimal => ImageUsage::COLOR_ATTACHMENT,
+        ImageLayout::DepthStencilAttachmentOptimal => ImageUsage::DEPTH_STENCIL_ATTACHMENT,
+        _ => ImageUsage::empty(),
+    }
+}
+
 /// Whether moving an image from `old` to `new` needs a pipeline barrier.
 ///
 /// A layout change always does. Staying in the same layout needs one too when that layout
@@ -380,6 +401,48 @@ mod tests {
         for layout in READ_ONLY_LAYOUTS {
             let (_, _, writes) = layout_scope(layout).unwrap();
             assert!(writes.is_empty(), "{layout:?} should be read-only");
+        }
+    }
+
+    #[test]
+    fn test_layout_usage_table() {
+        let expected = [
+            (ImageLayout::ShaderReadOnlyOptimal, ImageUsage::SAMPLED),
+            (ImageLayout::DepthStencilReadOnlyOptimal, ImageUsage::SAMPLED),
+            (ImageLayout::General, ImageUsage::STORAGE),
+            (ImageLayout::TransferSrcOptimal, ImageUsage::TRANSFER_SRC),
+            (ImageLayout::TransferDstOptimal, ImageUsage::TRANSFER_DST),
+            (
+                ImageLayout::ColorAttachmentOptimal,
+                ImageUsage::COLOR_ATTACHMENT,
+            ),
+            (
+                ImageLayout::DepthStencilAttachmentOptimal,
+                ImageUsage::DEPTH_STENCIL_ATTACHMENT,
+            ),
+            (ImageLayout::Undefined, ImageUsage::empty()),
+            (ImageLayout::PresentSrc, ImageUsage::empty()),
+        ];
+        for (layout, usage) in expected {
+            assert_eq!(layout_usage(layout), usage, "{layout:?}");
+        }
+    }
+
+    #[test]
+    fn test_layout_usage_matches_required_usage() {
+        // two tables describe the same thing; this keeps them from drifting apart
+        let usages = [
+            ResourceUsage::ColorAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+            ResourceUsage::DepthAttachment(ChaosRenderAttachmentLoadOp::DontCare),
+            ResourceUsage::StorageWrite,
+            ResourceUsage::TransferDst,
+        ];
+        for usage in usages {
+            assert_eq!(
+                layout_usage(usage.layout()),
+                usage.required_usage(),
+                "{usage:?}"
+            );
         }
     }
 }
